@@ -8,7 +8,7 @@
 
 ;;; Imports
 
-(require ffi/unsafe ffi/unsafe/define racket/file racket/list) 
+(require ffi/unsafe ffi/unsafe/define racket/file racket/list racket/promise)
 
 
 ;;; Configuration
@@ -60,26 +60,84 @@
                   (string->path (string-append name "." extension)))
       (string->path (string-append name "." extension))))
 
-(define libpython-path
-  (or (find-libpython3 libpython-folder) ; An absolute, full path
-      (for/first ([name '("libpython3" "libpython3.10" "libpython310"
-                                       )]
-                  #:when (file-exists? (build-full-path name)))
-        (build-full-path name))
-      ;; Github Action (Ubuntu)
-      ;;   On Github Action the `raco pyffi configure` is run after
-      ;;   the documentation is rendered, so we need to provide the version here.
-      "libpython3.14"))  
+;; --- temporarily disabled
+
+;; (define libpython-path
+;;   (or (find-libpython3 libpython-folder) ; An absolute, full path
+;;       (for/first ([name '("libpython3" "libpython3.10" "libpython310"
+;;                                        )]
+;;                   #:when (file-exists? (build-full-path name)))
+;;         (build-full-path name))
+;;       ;; Github Action (Ubuntu)
+;;       ;;   On Github Action the `raco pyffi configure` is run after
+;;       ;;   the documentation is rendered, so we need to provide the version here.
+;;       "libpython3.14"))  
 
 
-; Note: If the Python interpreter loads a shared library dynamically,
-;       it needs access to the Python C-API. To make the symbols
-;       exported by a shared library visible to other shared libaries,
-;       we need to use a "flat namespace" and therefore use `#:global? #t`,
-;       when loading the library.
+;; ; Note: If the Python interpreter loads a shared library dynamically,
+;; ;       it needs access to the Python C-API. To make the symbols
+;; ;       exported by a shared library visible to other shared libaries,
+;; ;       we need to use a "flat namespace" and therefore use `#:global? #t`,
+;; ;       when loading the library.
+
+;; (require pyffi/parameters)
+;; (define lib (ffi-lib libpython-path #:global? #t))
+
+;; (define-ffi-definer define-python lib #:default-make-fail make-not-available)
+
+;; --- temporarily disabled ends here
+
+
+;;;
+;;; Experimental lazy loading of libpython
+;;;
+
+;; --- libpython loading (runtime, lazy) -------------------------------------
+
+;; Prefer an explicit env var, so CI/users can point to a specific libpython.
+;; Examples:
+;;   PYFFI_LIBPYTHON=/usr/lib/.../libpython3.12.so.1.0
+;;   PYFFI_LIBPYTHON=libpython3.12
+(define (env-libpython)
+  (define s (getenv "PYFFI_LIBPYTHON"))
+  (and s (not (string=? s "")) s))
+
+(define (candidates)
+  ;; Add more names if you like. Keep them as names (no extension);
+  ;; build-full-path adds the platform extension when libpython-folder is set.
+  '("libpython3"
+    "libpython3.14" "libpython3.13" "libpython3.12" "libpython3.11" "libpython3.10"
+    "libpython310"))
+
+(define (resolve-libpython-path)
+  (cond
+    [(env-libpython)
+     (env-libpython)]
+    [else
+     (or (find-libpython3 libpython-folder) ; full path inside libpython-folder
+         (for/first ([name (in-list (candidates))]
+                     #:when (file-exists? (build-full-path name)))
+           (path->string (build-full-path name)))
+         ;; If libpython-folder is not set, allow dynamic loader search by name:
+         (for/first ([name (in-list (candidates))])
+           name)
+         (error 'pyffi
+                (string-append
+                 "Could not find/load libpython.\n"
+                 "Set preference 'pyffi:libdir' (raco pyffi configure), or set\n"
+                 "environment variable PYFFI_LIBPYTHON to a full path or a\n"
+                 "library name (e.g. libpython3.12).")))]))
+
+;; Note: We use #:global? #t so that symbols are visible to extension modules.
+;; IMPORTANT: Delay loading so that compilation/docs don't require libpython.
+(define lib*
+  (delay (ffi-lib (resolve-libpython-path) #:global? #t)))
+
+(define (get-lib)
+  (force lib*))
 
 (require pyffi/parameters)
-(define lib (ffi-lib libpython-path #:global? #t))
 
-(define-ffi-definer define-python lib #:default-make-fail make-not-available)
-
+;; define-python is a macro, but the library expression is evaluated at runtime.
+(define-ffi-definer define-python (get-lib)
+  #:default-make-fail make-not-available)
