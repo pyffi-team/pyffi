@@ -112,15 +112,49 @@ jobs:
       # Build documentation with raco scribble
       #
       # xvfb-run is needed for Scribble on headless CI
+      # - name: Build documentation with raco scribble
+      #  run: |
+      #    cd "$GITHUB_WORKSPACE"
+      #    mkdir -p htmls
+      #    xvfb-run -a raco scribble +m \
+      #      --redirect-main http://pkg-build.racket-lang.org/doc/ \
+      #      --htmls \
+      #      --dest ./htmls \
+      #      pyffi/pyffi-doc/pyffi/scribblings/manual-pyffi.scrbl
+
+      # Build documentation with raco scribble
+      #
+      # xvfb-run is needed for Scribble on headless CI
       - name: Build documentation with raco scribble
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+
+          echo "Workspace:"
+          pwd
+          echo "Top-level files:"
+          ls -la
+
+          echo "Searching for manual-pyffi.scrbl..."
+          MANUAL="$(find . -name manual-pyffi.scrbl -print -quit)"
+          echo "MANUAL=$MANUAL"
+
+          if [ -z "$MANUAL" ]; then
+            echo "ERROR: manual-pyffi.scrbl not found in workspace."
+            echo "Here are candidate scribblings:"
+            find . -maxdepth 5 -type f -name '*.scrbl' -print
+            exit 1
+          fi
+
           mkdir -p htmls
           xvfb-run -a raco scribble +m \
             --redirect-main http://pkg-build.racket-lang.org/doc/ \
             --htmls \
             --dest ./htmls \
-            pyffi/pyffi-doc/pyffi/scribblings/manual-pyffi.scrbl
+            "$MANUAL"
+
+
 
       # Push to Github Pages
       - name: Push to Github Pages
