@@ -13,14 +13,11 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# Environment variables
-env:
-  PYTHONPATH: "/opt/hostedtoolcache/Python/3.14.0/x64/"
-  # PYTHONPATH: "/opt/hostedtoolcache/Python/3.10.8/x64/"
-  # PYTHONPATH: "/opt/hostedtoolcache/Python/3.10.7/x64/lib/"
-  # PYTHONPATH: "/opt/hostedtoolcache/Python/3.10.7/x64/lib/python3.10"
+# NOTE:
+# Do NOT hardcode PYTHONPATH or hostedtoolcache paths.
+# Python patch versions and layouts change on GitHub runners.
+# We derive all paths dynamically from sysconfig instead.
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   # This workflow contains a single job called "build"
   build:
@@ -29,7 +26,7 @@ jobs:
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      # Checks-out your repository under $GITHUB_WORKSPACE
       - uses: actions/checkout@v4
 
       # Install Python 3.14
@@ -37,30 +34,45 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.14'
+
       # Python Diagnostics - Sysconfig
-      - name: Python Diagnostics
+      - name: Python Diagnostics - Sysconfig
         run: python3 -m sysconfig
-      # Python Diagnostics - Sysconfig
-      - name: Python Diagnostics - Is libpython to be found?
+
+      # Python Diagnostics - Is libpython to be found?
+      - name: Python Diagnostics - LDLIBRARY
         run: python3 -c "import sysconfig; print(sysconfig.get_config_var('LDLIBRARY'))"
+
       # Python Diagnostics - Names of modules in standard library
       - name: Python Diagnostics - Names of modules in standard library
-        run: python3.14 -c "import sys ; print(sorted(sys.stdlib_module_names))"
+        run: python3 -c "import sys ; print(sorted(sys.stdlib_module_names))"
+
       # Python Diagnostics - Names of builtin modules
       - name: Python Diagnostics - Names of builtin modules
-        run: python3.14 -c "import sys ; print(sorted(sys.builtin_module_names))"
-      # Python Diagnostics - Traceback
-      - name: Python Diagnostics (traceback)
+        run: python3 -c "import sys ; print(sorted(sys.builtin_module_names))"
+
+      # Python Diagnostics - Resolve libpython path
+      #
+      # We compute the *full path* to libpython using sysconfig.
+      # This is robust across patch versions (3.14.x) and runner changes.
+      - name: Export libpython path
+        shell: bash
         run: |
-              python3 -c "import traceback"
-              echo "DATA"        
-              # /Users/runner/hostedtoolcache/Python/3.10.7/x64  # macos
-              ls /opt/hostedtoolcache/Python/3.14.0/x64          # ubuntu
-              echo "LIBS"
-              ls /opt/hostedtoolcache/Python/3.14.0/x64/lib/python3.14
-      # Python Diagnostics - PYTHONPATH
-      - name: Python Diagnostics (PYTHONPATH)
-        run: ls $PYTHONPATH
+          set -euo pipefail
+          LIBDIR="$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')")"
+          LDLIB="$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LDLIBRARY') or '')")"
+
+          echo "LIBDIR=$LIBDIR"
+          echo "LDLIBRARY=$LDLIB"
+
+          echo "PYFFI_LIBPYTHON=$LIBDIR/$LDLIB" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$LIBDIR:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      # Sanity check
+      - name: Python Diagnostics - Check libpython exists
+        run: |
+          echo "PYFFI_LIBPYTHON=$PYFFI_LIBPYTHON"
+          ls -l "$PYFFI_LIBPYTHON"
 
       # Install Racket
       - name: Install Racket
@@ -73,32 +85,46 @@ jobs:
           dest: '"${HOME}/racketdist"'
           local_catalogs: $GITHUB_WORKSPACE
           sudo: never
+
       # Package Installation (pyffi-lib)
+      #
+      # --no-docs avoids forcing runtime Python during initial install
       - name: Package Installation - Local Packages
-        run: raco pkg install --no-docs --scope installation pyffi-lib 
+        run: raco pkg install --no-docs --scope installation pyffi-lib
+
       # Configure Pyffi
+      #
+      # PYFFI_LIBPYTHON is available here and should be preferred by pyffi
       - name: Configure Pyffi
         run: |
-             raco pyffi configure
-             raco pyffi show
-             raco pyffi diagnostics
-      # Test Program
-      # - name: Test Program
-      #  run: raco pyffi test
+          raco pyffi configure
+          raco pyffi show
+          raco pyffi diagnostics
+
       # Package Installation (pyffi-doc)
       - name: Package Installation (pyffi-doc)
         run: raco pkg install --scope installation pyffi-doc
+
       # Setup Local Packages
       - name: Setup Collections
         run: raco setup -v --check-pkg-deps pyffi
+
+      # Build documentation with raco scribble
+      #
+      # xvfb-run is needed for Scribble on headless CI
       - name: Build documentation with raco scribble
         run: |
-             cd /home/runner/work/pyffi/
-             pwd
-             ls -F -G -R *        
-             xvfb-run -a raco scribble +m --redirect-main http://pkg-build.racket-lang.org/doc/ --htmls --dest ./htmls pyffi/pyffi-doc/pyffi/scribblings/manual-pyffi.scrbl
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p htmls
+          xvfb-run -a raco scribble +m \
+            --redirect-main http://pkg-build.racket-lang.org/doc/ \
+            --htmls \
+            --dest ./htmls \
+            pyffi/pyffi-doc/pyffi/scribblings/manual-pyffi.scrbl
+
+      # Push to Github Pages
       - name: Push to Github Pages
         uses: JamesIves/github-pages-deploy-action@4.1.4
         with:
-          folder: /home/runner/work/pyffi/htmls/manual-pyffi
+          folder: htmls/manual-pyffi
           branch: gh-pages
