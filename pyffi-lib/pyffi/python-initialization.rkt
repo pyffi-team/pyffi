@@ -19,7 +19,8 @@
 ; (define program-full-path "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10")
 (define program-full-path "python3.10")
 
-(define home (get-preference 'pyffi:data (λ () #f)))
+(define home (or (get-preference 'pyffi:home (λ () #f))
+                 (get-preference 'pyffi:data (λ () #f))))
 (unless home
   (parameterize ([current-output-port (current-error-port)])
     (displayln "There is no preference for 'pyffi:data' set.")
@@ -125,9 +126,11 @@
 
   (define (decode s) (Py_DecodeLocale s #f))
 
-  (set-PyConfig-home!         config (decode home))
-  ; (set-PyConfig-program_name! config (decode "python3.10"))
-  (set-PyConfig-platlibdir! config   (decode (string-append home "/" "lib/python3.10")))
+  (define pyver      (get-preference 'pyffi:pyver      (λ () "3.12")))
+  (define platlibdir (get-preference 'pyffi:platlibdir (λ () "lib")))
+  (define venv       (get-preference 'pyffi:venv       (λ () #f)))
+  (set-PyConfig-home!       config (decode home))
+  (set-PyConfig-platlibdir! config (decode platlibdir))
   
   #;(let ([pythonpath (getenv "PYTHONPATH")])
     (when pythonpath
@@ -156,8 +159,19 @@
   #;(run-initialization-thunks))
 
 
-(define (post-initialize)  
-  (run-initialization-thunks))
+(define (post-initialize)
+  (run-initialization-thunks)
+  ; Inject venv site-packages into sys.path when a venv was configured.
+  (define venv-pref (get-preference 'pyffi:venv (λ () #f)))
+  (define pyver-pref (get-preference 'pyffi:pyver (λ () "3.12")))
+  (when venv-pref
+    (define sitepkg (string-append venv-pref "/lib/python" pyver-pref "/site-packages"))
+    (when (directory-exists? sitepkg)
+      (define import-site (PyImport_ImportModule "site"))
+      (define sys-mod     (PyImport_ImportModule "sys"))
+      (define sys-path    (PyObject_GetAttrString sys-mod "path"))
+      (PyList_Append sys-path (PyUnicode_FromString sitepkg))
+      (void))))
 
 (define (finish-initialization)
   (run-initialization-thunks))
