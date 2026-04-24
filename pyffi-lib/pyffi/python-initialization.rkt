@@ -5,7 +5,8 @@
          "python-delayed.rkt"
          "python-constants.rkt"
          "structs.rkt"
-         racket/file)
+         racket/file
+         racket/string)
 
 (provide set-environment-variables
          initialize 
@@ -22,12 +23,14 @@
 (define home (or (get-preference 'pyffi:home (λ () #f))
                  (get-preference 'pyffi:data (λ () #f))))
 (unless home
-  (parameterize ([current-output-port (current-error-port)])
-    (displayln "There is no preference for 'pyffi:data' set.")
-    (displayln "You must set the 'pyffi:data' preference to the home folder of python.")
-    (displayln "The most convenient way to do this, is to run `raco pyffi configure`.")
-    (displayln "See details in the documentation.")
-    (exit 1)))
+  (raise (exn:fail:pyffi:not-configured
+          (string-join
+           '("pyffi is not configured: neither the 'pyffi:home nor 'pyffi:data preference is set."
+             "You must set 'pyffi:home (or, for backwards compatibility, 'pyffi:data) to the home"
+             "folder of Python.  The most convenient way to do this is to run"
+             "`raco pyffi configure`.  See details in the documentation.")
+           "\n")
+          (current-continuation-marks))))
 
 
 #;(define program-full-path
@@ -38,12 +41,14 @@
 
 (define libdir (get-preference 'pyffi:libdir (λ () #f)))
 (unless libdir
-  (parameterize ([current-output-port (current-error-port)])
-    (displayln "There is no preference for 'pyffi:libdir' set.")
-    (displayln "You must set the 'pyffi:libdir' preference to the home folder of python.")
-    (displayln "The most convenient way to do this, is to run `raco pyffi configure`.")
-    (displayln "See details in the documentation.")
-    (exit 1)))
+  (raise (exn:fail:pyffi:not-configured
+          (string-join
+           '("pyffi is not configured: the 'pyffi:libdir preference is not set."
+             "You must set 'pyffi:libdir to the folder containing libpython3."
+             "The most convenient way to do this is to run `raco pyffi configure`."
+             "See details in the documentation.")
+           "\n")
+          (current-continuation-marks))))
 
 (define (set-environment-variables)
   (define (decode s) (Py_DecodeLocale s #f))

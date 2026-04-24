@@ -11,7 +11,26 @@
          (struct-out callable-obj)
          (struct-out method-obj)
          (struct-out generator-obj)
-         (struct-out asis))
+         (struct-out asis)
+
+         ;; Exceptions
+         (struct-out exn:fail:pyffi)
+         (struct-out exn:fail:pyffi:not-configured))
+
+;; ------------------------------------------------------------------
+;; Exception hierarchy
+;;
+;; `exn:fail:pyffi`                — anything pyffi itself raises
+;; `exn:fail:pyffi:not-configured` — pyffi's libpython / home preferences
+;;                                   are unset.  Raised (instead of
+;;                                   calling `(exit 1)`) so consumers
+;;                                   can catch the condition and present
+;;                                   a friendly message, fall back to a
+;;                                   stub implementation, etc.
+;; ------------------------------------------------------------------
+
+(struct exn:fail:pyffi exn:fail () #:transparent)
+(struct exn:fail:pyffi:not-configured exn:fail:pyffi () #:transparent)
 
 (struct pytype (type racket-to-python python-to-racket))
 
