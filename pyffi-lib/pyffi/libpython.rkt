@@ -32,19 +32,42 @@
 
 
 ;; find-libpython3 : (or/c path-string? #f) -> (or/c path? #f)
-;;   If libpython-folder is a directory, return the path to a file named
-;;     libpython3.xx.<extension>
-;;   inside that directory, or #f if none is found or folder is #f.
+;;   If libpython-folder is a directory, return the path to a libpython
+;;   file inside it, or #f if none is found or folder is #f.
+;;
+;;   Filenames matched, by platform:
+;;     macOS  : libpython3.<X>[abi].dylib
+;;     Linux  : libpython3.<X>[abi].so[.<N>[.<M>...]]
+;;     Windows: libpython3.<X>[abi].dll           (rare — usually pythonXY.dll)
+;;
+;;   Where <X> is one or more digits (so Python 3.9 through 3.99+ all work)
+;;   and [abi] is an optional Python ABI flag letter such as `t`
+;;   (free-threaded, 3.13+), `d` (debug), or `m` (historical).
+;;
+;;   On Linux this accepts both the unversioned `.so` symlink and the
+;;   real SONAME variants like `libpython3.12.so.1.0`.  This matters on
+;;   distros that no longer ship the unversioned symlink in
+;;   libpython3-dev (Ubuntu 24.04 onward).
 (define (find-libpython3 libpython-folder)
   (cond
     [(not libpython-folder) #f]
     [else
      (define dir (path->complete-path libpython-folder))
      (define rx
-       ;; Example on macOS: ^libpython3\.[0-9][0-9]\.dylib$
-       (regexp (format "^libpython3\\.[0-9][0-9]~a$"
-                       (regexp-quote
-                        (string-append "." extension)))))
+       (case (system-type 'os)
+         [(unix)
+          ;; libpython3.12.so, libpython3.12.so.1, libpython3.12.so.1.0,
+          ;; libpython3.13t.so ...
+          #rx"^libpython3\\.[0-9]+[a-z]*\\.so(\\.[0-9]+)*$"]
+         [(macosx)
+          ;; libpython3.12.dylib, libpython3.13t.dylib
+          #rx"^libpython3\\.[0-9]+[a-z]*\\.dylib$"]
+         [(windows)
+          #rx"^libpython3\\.[0-9]+[a-z]*\\.dll$"]
+         [else
+          ;; Fallback: platform-specific extension with multi-digit minor.
+          (regexp (format "^libpython3\\.[0-9]+[a-z]*~a$"
+                          (regexp-quote (string-append "." extension))))]))
      (with-handlers ([exn:fail? (λ (_e) #f)])
        (for/or ([p (in-list (directory-list dir))])
          (let-values ([(base name must-dir?) (split-path p)])
