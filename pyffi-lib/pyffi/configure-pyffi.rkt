@@ -216,6 +216,14 @@
        (newline)
        (displayln system-configuration-string))]))
 
+(define (run-python-query path-to-python code)
+  (define str-path (if (path? path-to-python)
+                       (path->string path-to-python)
+                       (or path-to-python "python3")))
+  (define cmd (string-append str-path " -c " (format "~s" code)))
+  (define out (with-output-to-string (λ () (system cmd))))
+  (string-trim out))
+
 (define (handle-data path-to-python)
   (cond
     [(python-data) => set-new-data]
@@ -227,11 +235,48 @@
        (newline)
        (displayln system-configuration-string))]))
 
+(define (set-new-home new-home)
+  (put-preferences (list 'pyffi:home) (list new-home))
+  (displayln "The preference for PYTHONHOME is now set to:")
+  (display   "    ")
+  (displayln new-home))
+
+(define (set-new-pyver new-pyver)
+  (put-preferences (list 'pyffi:pyver) (list new-pyver))
+  (displayln "The preference for Python version is now set to:")
+  (display   "    ")
+  (displayln new-pyver))
+
+(define (set-new-venv new-venv)
+  (put-preferences (list 'pyffi:venv) (list new-venv))
+  (displayln "The preference for venv path is now set to:")
+  (display   "    ")
+  (displayln new-venv))
+
+(define (set-new-platlibdir new-platlibdir)
+  (put-preferences (list 'pyffi:platlibdir) (list new-platlibdir))
+  (displayln "The preference for platlibdir is now set to:")
+  (display   "    ")
+  (displayln new-platlibdir))
+
+(define (handle-home-and-ver path-to-python)
+  (define data       (python-data))
+  (define prefix     (run-python-query path-to-python "import sys; print(sys.base_prefix)"))
+  (define pyver      (run-python-query path-to-python "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"))
+  (define platlibdir (run-python-query path-to-python "import sysconfig; print(sysconfig.get_config_var('platlibdir'))"))
+  (when (and prefix (not (equal? prefix "")))     (set-new-home prefix))
+  (when (and pyver  (not (equal? pyver "")))      (set-new-pyver pyver))
+  (when (and platlibdir (not (equal? platlibdir ""))) (set-new-platlibdir platlibdir))
+  (when (and data prefix (not (equal? data prefix)))
+    (set-new-venv data)))
+
 (define (configure [path-to-python #f])
   (get-configuration path-to-python)
   (handle-libdir path-to-python)
   (newline)
-  (handle-data   path-to-python))
+  (handle-data   path-to-python)
+  (newline)
+  (handle-home-and-ver path-to-python))
 
 (define (show)
   (displayln  "Current configuration for 'pyffi'.")
