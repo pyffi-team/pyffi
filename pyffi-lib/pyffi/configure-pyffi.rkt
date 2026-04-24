@@ -279,21 +279,38 @@
   (handle-home-and-ver path-to-python))
 
 (define (show)
-  (displayln  "Current configuration for 'pyffi'.")
-  (newline)
-  (display    "    libdir = ")
-  (write      (get-preference 'pyffi:libdir))
-  (newline)
+  ;; Print every preference this package reads, with a short legend.
+  ;; Keep this in sync with the preferences written by `configure` in
+  ;; `handle-libdir`, `handle-data`, and `handle-home-and-ver` above.
+  (define (show-pref key label)
+    (display "    ")
+    (display label)
+    (display " = ")
+    (write (get-preference key (λ () #f)))
+    (newline))
 
-  (display    "    data   = ")
-  (write      (get-preference 'pyffi:data))
+  (displayln "Current configuration for 'pyffi'.")
   (newline)
+  (show-pref 'pyffi:libdir     "libdir    ")
+  (show-pref 'pyffi:data       "data      ")
+  (show-pref 'pyffi:home       "home      ")
+  (show-pref 'pyffi:pyver      "pyver     ")
+  (show-pref 'pyffi:platlibdir "platlibdir")
+  (show-pref 'pyffi:venv       "venv      ")
 
   (newline)
-  (displayln  "Meaning:")
+  (displayln "Meaning:")
   (newline)
-  (displayln  "    libdir:  location of the shared library 'libpython'")
-  (displayln  "    data:    location of bin/ lib/ share/ etc."))
+  (displayln "    libdir:     location of the shared library 'libpython'")
+  (displayln "    data:       sysconfig 'data' path — usually a venv root,")
+  (displayln "                or the install prefix when no venv is in use")
+  (displayln "    home:       PYTHONHOME — Python's base prefix (where the")
+  (displayln "                stdlib lives); differs from data when running")
+  (displayln "                from a venv")
+  (displayln "    pyver:      Python major.minor, e.g. 3.12")
+  (displayln "    platlibdir: sysconfig 'platlibdir' (usually 'lib' or 'lib64')")
+  (displayln "    venv:       venv root, if any — used to append")
+  (displayln "                <venv>/lib/python<pyver>/site-packages to sys.path"))
 
 (define usage
   @~a{
