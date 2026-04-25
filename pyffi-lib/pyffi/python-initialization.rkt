@@ -6,6 +6,7 @@
          "python-constants.rkt"
          "structs.rkt"
          racket/file
+         racket/path
          racket/string)
 
 (provide set-environment-variables
@@ -20,35 +21,35 @@
 ; (define program-full-path "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3.10")
 (define program-full-path "python3.10")
 
-(define home (or (get-preference 'pyffi:home (λ () #f))
-                 (get-preference 'pyffi:data (λ () #f))))
+;; PYTHONHOME resolution order:
+;;   1. 'pyffi:home preference (explicit user config via raco pyffi configure)
+;;   2. 'pyffi:data preference (legacy fallback for old configurations)
+;;   3. The natipkg companion's package root, if a natipkg is installed
+;;      and bundles a relocatable Python (libpython + stdlib).
+;;   4. Error — pyffi is not configured.
+(define home
+  (or (get-preference 'pyffi:home (λ () #f))
+      (get-preference 'pyffi:data (λ () #f))
+      (let ([root (pyffi-natipkg-root)])
+        ;; `simple-form-path` collapses any `..` segments introduced
+        ;; by `pkg-directory`'s symlinked-install layout, so
+        ;; Py_Initialize gets a canonical PYTHONHOME.
+        (and root (path->string (simple-form-path root))))))
 (unless home
   (raise (exn:fail:pyffi:not-configured
           (string-join
-           '("pyffi is not configured: neither the 'pyffi:home nor 'pyffi:data preference is set."
-             "You must set 'pyffi:home (or, for backwards compatibility, 'pyffi:data) to the home"
-             "folder of Python.  The most convenient way to do this is to run"
-             "`raco pyffi configure`.  See details in the documentation.")
+           '("pyffi is not configured: neither 'pyffi:home nor 'pyffi:data is set,"
+             "and no natipkg companion (e.g. pyffi-aarch64-linux-natipkg) is installed."
+             "Either install a natipkg companion to use a bundled Python, or run"
+             "`raco pyffi configure /path/to/python3` to point at a system install.")
            "\n")
           (current-continuation-marks))))
 
 
-#;(define program-full-path
-   "/usr/local/Cellar/python@3.10/3.10.4/Frameworks/Python.framework/Versions/3.10/bin/python3.10")
-
-; (define home "/usr/local/Cellar/python@3.10/3.10.4/Frameworks/Python.framework/Versions/3.10")
-
-
-(define libdir (get-preference 'pyffi:libdir (λ () #f)))
-(unless libdir
-  (raise (exn:fail:pyffi:not-configured
-          (string-join
-           '("pyffi is not configured: the 'pyffi:libdir preference is not set."
-             "You must set 'pyffi:libdir to the folder containing libpython3."
-             "The most convenient way to do this is to run `raco pyffi configure`."
-             "See details in the documentation.")
-           "\n")
-          (current-continuation-marks))))
+;; The actual libpython load is handled by libpython.rkt, which knows
+;; how to discover the library across env vars, user prefs, the
+;; natipkg companion and the dynamic loader.  python-initialization
+;; only needs PYTHONHOME (the `home` value above) for Py_Initialize.
 
 (define (set-environment-variables)
   (define (decode s) (Py_DecodeLocale s #f))
@@ -131,9 +132,13 @@
 
   (define (decode s) (Py_DecodeLocale s #f))
 
-  (define pyver      (get-preference 'pyffi:pyver      (λ () "3.12")))
-  (define platlibdir (get-preference 'pyffi:platlibdir (λ () "lib")))
-  (define venv       (get-preference 'pyffi:venv       (λ () #f)))
+  ;; Read preferences with defaults.  Each `or` guards against a
+  ;; preference that was deliberately cleared to #f — `get-preference`
+  ;; returns #f in that case instead of the default thunk's value,
+  ;; and passing #f to `Py_DecodeLocale` crashes Python.
+  (define pyver      (or (get-preference 'pyffi:pyver      (λ () #f)) "3.12"))
+  (define platlibdir (or (get-preference 'pyffi:platlibdir (λ () #f)) "lib"))
+  (define venv       (get-preference 'pyffi:venv (λ () #f)))
   (set-PyConfig-home!       config (decode home))
   (set-PyConfig-platlibdir! config (decode platlibdir))
   

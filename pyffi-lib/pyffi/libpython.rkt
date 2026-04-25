@@ -1,14 +1,16 @@
 #lang at-exp racket/base
 
 ;;;  This module loads the shared library `libpython` and
-;;;  provides the form `define-python` which is used to 
+;;;  provides the form `define-python` which is used to
 ;;;  create bindings for Python's C-API.
 
-(provide define-python)
+(provide define-python
+         pyffi-natipkg-root)
 
 ;;; Imports
 
-(require ffi/unsafe ffi/unsafe/define racket/file racket/list racket/promise)
+(require ffi/unsafe ffi/unsafe/define racket/file racket/list racket/promise
+         pkg/lib)
 
 
 ;;; Configuration
@@ -132,24 +134,92 @@
     "libpython3.14" "libpython3.13" "libpython3.12" "libpython3.11" "libpython3.10"
     "libpython310"))
 
+;; ---------------------------------------------------------------------------
+;; natipkg auto-discovery
+;;
+;; When the user has neither `pyffi:libdir` nor `PYFFI_LIBPYTHON` set, look
+;; for a sibling platform-specific natipkg package (`pyffi-<arch>-<os>-natipkg`)
+;; that bundles a relocatable libpython plus its stdlib.  The natipkg
+;; packages are installed automatically on matching platforms via pyffi-lib's
+;; `platform-deps` declaration.  Each `define-runtime-path` below resolves at
+;; module init against the installed package layout; if a natipkg isn't
+;; installed, the resolved path points at a non-existent directory and is
+;; filtered out by `directory-exists?`.
+;; ---------------------------------------------------------------------------
+
+(define (current-natipkg-name)
+  (case (system-type 'os)
+    [(unix)
+     (case (system-type 'arch)
+       [(aarch64) "pyffi-aarch64-linux-natipkg"]
+       [(x86_64)  "pyffi-x86_64-linux-natipkg"]
+       [else #f])]
+    [(macosx)
+     (case (system-type 'arch)
+       [(aarch64) "pyffi-aarch64-macosx-natipkg"]
+       [(x86_64)  "pyffi-x86_64-macosx-natipkg"]
+       [else #f])]
+    [else #f]))
+
+(define (natipkg-lib-dir)
+  ;; Locate the lib/ directory of the natipkg matching the current
+  ;; host, or #f if the natipkg isn't installed or the platform isn't
+  ;; covered.  `pkg-directory` returns #f cleanly for absent packages
+  ;; (in contrast to `define-runtime-path` with a `'(lib …)` form,
+  ;; which fails hard at compile time when the collection is missing).
+  (define name (current-natipkg-name))
+  (and name
+       (with-handlers ([exn:fail? (λ (_) #f)])
+         (define dir (pkg-directory name))
+         (and dir
+              (let ([lib (build-path dir "lib")])
+                (and (directory-exists? lib) lib))))))
+
+(define (natipkg-libpython)
+  (define dir (natipkg-lib-dir))
+  (and dir (find-libpython3 dir)))
+
+;; Public: the natipkg's package root (the parent of its lib dir), or #f if
+;; no natipkg is present.  python-initialization.rkt reads this to default
+;; PYTHONHOME so Py_Initialize finds the bundled stdlib.
+(define (pyffi-natipkg-root)
+  (define lib (natipkg-lib-dir))
+  (and lib
+       (let-values ([(parent _ _2) (split-path lib)])
+         (and (path? parent) parent))))
+
+;; ---------------------------------------------------------------------------
+;; Discovery order
+;;
+;;   1. PYFFI_LIBPYTHON      — explicit env-var override (highest priority)
+;;   2. pyffi:libdir         — explicit user config (raco pyffi configure)
+;;   3. natipkg auto-discovery — bundled libpython if a natipkg is installed
+;;   4. dynamic loader search by name — last-resort default
+;;   5. error                — nothing found
+;; ---------------------------------------------------------------------------
+
 (define (resolve-libpython-path)
   (cond
     [(env-libpython)
      (env-libpython)]
     [else
-     (or (find-libpython3 libpython-folder) ; full path inside libpython-folder
-         (for/first ([name (in-list (candidates))]
+     (or (find-libpython3 libpython-folder)         ; user pref (pyffi:libdir)
+         (for/first ([name (in-list (candidates))]  ; user pref by candidate name
                      #:when (file-exists? (build-full-path name)))
            (path->string (build-full-path name)))
-         ;; If libpython-folder is not set, allow dynamic loader search by name:
-         (for/first ([name (in-list (candidates))])
+         (let ([p (natipkg-libpython)])             ; bundled natipkg
+           (and p (path->string p)))
+         (for/first ([name (in-list (candidates))]) ; loader search by name
            name)
          (error 'pyffi
                 (string-append
                  "Could not find/load libpython.\n"
-                 "Set preference 'pyffi:libdir' (raco pyffi configure), or set\n"
-                 "environment variable PYFFI_LIBPYTHON to a full path or a\n"
-                 "library name (e.g. libpython3.12).")))]))
+                 "Try one of:\n"
+                 " - Install the natipkg companion (e.g.\n"
+                 "   `raco pkg install pyffi-aarch64-linux-natipkg`).\n"
+                 " - Set preference 'pyffi:libdir' (raco pyffi configure).\n"
+                 " - Set environment variable PYFFI_LIBPYTHON to a full path\n"
+                 "   or a library name (e.g. libpython3.12).")))]))
 
 ;; Note: We use #:global? #t so that symbols are visible to extension modules.
 ;; IMPORTANT: Delay loading so that compilation/docs don't require libpython.
