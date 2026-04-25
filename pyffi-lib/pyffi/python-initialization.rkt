@@ -6,6 +6,7 @@
          "python-constants.rkt"
          "structs.rkt"
          racket/file
+         racket/path
          racket/string)
 
 (provide set-environment-variables
@@ -30,7 +31,10 @@
   (or (get-preference 'pyffi:home (λ () #f))
       (get-preference 'pyffi:data (λ () #f))
       (let ([root (pyffi-natipkg-root)])
-        (and root (path->string (path->complete-path root))))))
+        ;; `simple-form-path` collapses any `..` segments introduced
+        ;; by `pkg-directory`'s symlinked-install layout, so
+        ;; Py_Initialize gets a canonical PYTHONHOME.
+        (and root (path->string (simple-form-path root))))))
 (unless home
   (raise (exn:fail:pyffi:not-configured
           (string-join
@@ -128,9 +132,13 @@
 
   (define (decode s) (Py_DecodeLocale s #f))
 
-  (define pyver      (get-preference 'pyffi:pyver      (λ () "3.12")))
-  (define platlibdir (get-preference 'pyffi:platlibdir (λ () "lib")))
-  (define venv       (get-preference 'pyffi:venv       (λ () #f)))
+  ;; Read preferences with defaults.  Each `or` guards against a
+  ;; preference that was deliberately cleared to #f — `get-preference`
+  ;; returns #f in that case instead of the default thunk's value,
+  ;; and passing #f to `Py_DecodeLocale` crashes Python.
+  (define pyver      (or (get-preference 'pyffi:pyver      (λ () #f)) "3.12"))
+  (define platlibdir (or (get-preference 'pyffi:platlibdir (λ () #f)) "lib"))
+  (define venv       (get-preference 'pyffi:venv (λ () #f)))
   (set-PyConfig-home!       config (decode home))
   (set-PyConfig-platlibdir! config (decode platlibdir))
   
