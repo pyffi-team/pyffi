@@ -152,15 +152,32 @@
                  "library name (e.g. libpython3.12).")))]))
 
 ;; Note: We use #:global? #t so that symbols are visible to extension modules.
-;; IMPORTANT: Delay loading so that compilation/docs don't require libpython.
+;;
+;; Errors during path resolution or `ffi-lib` are caught and turned into
+;; a #f library handle.  Two reasons:
+;;
+;;   1. `define-ffi-definer` below caches its lib expression at module
+;;      init time, which forces this promise during compilation.  The
+;;      Racket package-build server (and any other system that compiles
+;;      pyffi without Python installed) needs that step to succeed even
+;;      when libpython is absent.  With a #f lib handle, the bindings
+;;      defined by `define-python` become "not available" stubs (via
+;;      `#:default-make-fail make-not-available`); the module compiles,
+;;      and any actual call into Python fails at the call site rather
+;;      than at compile time.
+;;
+;;   2. Downstream consumers that want to require pyffi optionally
+;;      (e.g. only when Python is configured) can load the package and
+;;      then check `(get-lib)` themselves before calling anything.
 (define lib*
-  (delay (ffi-lib (resolve-libpython-path) #:global? #t)))
+  (delay
+    (with-handlers ([exn:fail? (λ (_) #f)])
+      (ffi-lib (resolve-libpython-path) #:global? #t))))
 
 (define (get-lib)
   (force lib*))
 
 (require pyffi/parameters)
 
-;; define-python is a macro, but the library expression is evaluated at runtime.
 (define-ffi-definer define-python (get-lib)
   #:default-make-fail make-not-available)

@@ -20,6 +20,18 @@
 (require racket/format racket/match racket/string
          (for-syntax racket/base  racket/format
                      syntax/parse racket/syntax))
+
+;; A handful of Python singletons (Py_False, Py_True, the-None) are
+;; computed at module init by calling into libpython.  When libpython
+;; isn't loadable (e.g. when the package-build server compiles pyffi
+;; without Python installed), `define-python` produces "not available"
+;; stubs that error if called.  Wrapping each top-level FFI initialiser
+;; in `lazy-ffi` lets module init succeed in that case — the singleton
+;; binds to #f, and any actual use will already have failed earlier at
+;; `(initialize)`/Py_Initialize_FromConfig time.  See libpython.rkt for
+;; the matching tolerance in the lib-load path.
+(define-syntax-rule (lazy-ffi expr)
+  (with-handlers ([exn:fail? (λ (_) #f)]) expr))
 ;;;
 ;;; TYPES
 ;;;
@@ -206,13 +218,13 @@
 (define-python PyBool_FromLong (_fun _long -> [o : _PyObject*] -> (new-reference o)))
 ; Return a new reference to Py_True or Py_False depending on the truth value of v.
 
-(define Py_False (PyBool_FromLong 0))
+(define Py_False (lazy-ffi (PyBool_FromLong 0)))
 ;   The Python False object. This object has no methods.
 ;   It needs to be treated just like any other object with respect to reference counts.
 ;   When used as a return value, remember to increment the reference count.
 ;   [Use Py_RETURN_FALSE]
 
-(define Py_True (PyBool_FromLong 1))
+(define Py_True (lazy-ffi (PyBool_FromLong 1)))
 ; The Python True object. This object has no methods.
 ; It needs to be treated just like any other object with respect to reference counts.
 ;   When used as a return value, remember to increment the reference count.
@@ -402,7 +414,7 @@
 (define-python Py_BuildValue0 (_fun #:varargs-after 1 _string -> [o : _PyObject*] -> (new-reference o))
   #:c-id Py_BuildValue)
 
-(define the-None (Py_BuildValue0 ""))
+(define the-None (lazy-ffi (Py_BuildValue0 "")))
 (define (build-None)
   (Py_IncRef the-None)
   the-None)
