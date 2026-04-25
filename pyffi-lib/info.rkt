@@ -24,10 +24,10 @@
 ;; pick up the same fallback.
 (define build-deps
   '("base" "at-exp-lib"
-    ("pyffi-aarch64-linux-natipkg"  #:platform "aarch64-linux")
+    ("pyffi-aarch64-linux-natipkg"  #:platform "aarch64-linux-natipkg")
     ("pyffi-x86_64-linux-natipkg"   #:platform "x86_64-linux-natipkg")
-    ("pyffi-aarch64-macosx-natipkg" #:platform "aarch64-macosx")
-    ("pyffi-x86_64-macosx-natipkg"  #:platform "x86_64-macosx")))
+    ("pyffi-aarch64-macosx-natipkg" #:platform "aarch64-macosx-natipkg")
+    ("pyffi-x86_64-macosx-natipkg"  #:platform "x86_64-macosx-natipkg")))
 
 
 (define pkg-desc "Use Python from Racket - Implementation part without documentation")
