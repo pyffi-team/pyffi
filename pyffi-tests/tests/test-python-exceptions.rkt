@@ -329,3 +329,70 @@ class Sentinel(Exception):
 
   (check-equal? (python-exception-type-name surfaced) "TypeError")
   (check-true (regexp-match? #rx"Racket said no" (exn-message surfaced))))
+
+;; ===================================================================
+;; 11. reraise-into-python does not leak a traceback reference per call
+;;     [REGRESSION TEST for reviewer concern #1]
+;;
+;; The traceback fetched via PyObject_GetAttrString(value, "__traceback__")
+;; is already a *new* reference, and PyErr_Restore steals it.  An extra
+;; Py_IncRef on top of that would leak one traceback object per
+;; re-raise.  We pin the live traceback in a Python global so we can
+;; query its refcount via sys.getrefcount before and after a loop of
+;; re-raise/catch cycles; the delta must stay bounded.
+;; ===================================================================
+
+(test-case "[REGRESSION] reraise-into-python does not leak the traceback"
+  (run* "
+import sys
+try:
+    1/0
+except ZeroDivisionError as _e:
+    _tb_pin = _e.__traceback__
+")
+  (define caught (catching python-exception? (λ () (run "raise _e"))))
+
+  ;; Refcount on the pinned traceback before the loop.
+  (define before (pr (run "sys.getrefcount(_tb_pin)")))
+
+  ;; Re-raise and catch many times.  If the spurious incref were still
+  ;; in place each iteration would leak one ref; a tight loop makes
+  ;; the leak visible as a near-linear refcount growth.
+  (define iters 50)
+  (for ([_ (in-range iters)])
+    (reraise-into-python caught)
+    (catching python-exception? (λ () (run "1"))))
+
+  (define after (pr (run "sys.getrefcount(_tb_pin)")))
+
+  ;; With the fix the delta is 0 (or a small constant from incidental
+  ;; Python-side bookkeeping).  Without the fix it grows by `iters`.
+  ;; A threshold well below `iters` distinguishes the two regimes.
+  (check-true (< (- after before) 5)
+              (format "tb refcount grew by ~a after ~a re-raises (expected ~v)"
+                      (- after before) iters 0)))
+
+;; ===================================================================
+;; 12. raise-into-python accepts non-Python values for #:value
+;;     [REGRESSION TEST for reviewer concern #2]
+;;
+;; The previous code passed `value` straight to PyErr_Restore as a
+;; PyObject*, which segfaulted the next time Python tried to format
+;; the exception when `value` was a Racket string/number/etc.  The
+;; fix routes non-Python values through racket->python and calls
+;; cls(value), so the resulting Python exception is `cls(value)`.
+;; ===================================================================
+
+(test-case "[REGRESSION] raise-into-python coerces a Racket string into cls(value)"
+  (define value-error-class (run "ValueError"))
+  (raise-into-python value-error-class #:value "racket-supplied message")
+  (define surfaced (catching python-exception? (λ () (run "1"))))
+  (check-equal? (python-exception-type-name surfaced) "ValueError")
+  (check-true (regexp-match? #rx"racket-supplied message" (exn-message surfaced))))
+
+(test-case "[REGRESSION] raise-into-python coerces a Racket integer into cls(value)"
+  (define value-error-class (run "ValueError"))
+  (raise-into-python value-error-class #:value 1234567)
+  (define surfaced (catching python-exception? (λ () (run "1"))))
+  (check-equal? (python-exception-type-name surfaced) "ValueError")
+  (check-true (regexp-match? #rx"1234567" (exn-message surfaced))))

@@ -33,7 +33,9 @@
 ;;; complementary direction.
 
 (require "structs.rkt"
-         "python-c-api.rkt")
+         "python-c-api.rkt"
+         (only-in ffi/unsafe cpointer?)
+         (only-in "python-types.rkt" racket->python))
 
 (provide reraise-into-python
          reraise-into-python/from
@@ -67,11 +69,18 @@
   ;; The live traceback object stays on value.__traceback__ across the
   ;; round trip — read it directly so we restore the original frame
   ;; info instead of synthesising a new one.
+  ;; PyObject_GetAttrString returns a *new* reference to the traceback
+  ;; (or NULL on missing attr).  PyErr_Restore steals that reference,
+  ;; so we deliberately do not Py_IncRef tb a second time -- the
+  ;; balance is already correct, and an extra incref would leak one
+  ;; traceback object per re-raise.  cls and value are different: they
+  ;; come from the python-exception struct, which is rooted by Racket-
+  ;; side `obj` wrappers that will Py_DecRef on finalisation, so we
+  ;; must Py_IncRef them before PyErr_Restore steals.
   (define tb    (and value (PyObject_GetAttrString value "__traceback__")))
   (when (equal? tb the-None) (set! tb #f))
   (incref! cls)
   (incref! value)
-  (incref! tb)
   (PyErr_Restore cls value tb))
 
 ;; Like `reraise-into-python` but additionally sets `__cause__` on the
@@ -99,24 +108,45 @@
 ;; domain-specific exception type — for example a Racket-side
 ;; validation error becoming a `ValueError` to downstream Python code.
 ;;
-;; `value` is optional: when supplied, used as the exception
-;; instance directly; when omitted, the class is constructed with no
-;; arguments via `cls()`.
+;; `value` is optional.  When omitted, the class is constructed with
+;; no arguments via `cls()`.  When supplied:
+;;   * an `obj` wrapper or raw Python pointer is used as the
+;;     exception instance directly;
+;;   * any other Racket value (string, number, list, ...) is
+;;     converted via `racket->python` and passed as a single
+;;     positional arg to `cls(...)`, mirroring `raise cls(value)`.
+;; This avoids handing a Racket string to PyErr_Restore as a
+;; PyObject* (which would crash the next time Python tried to
+;; format the exception).
 ;;
 ;; `cause` is optional: when supplied, sets `__cause__` on the new
 ;; exception, mirroring `raise New(...) from cause`.
+(define (python-pointer? x)
+  (or (obj? x) (cpointer? x)))
+
 (define (raise-into-python cls
                             #:value [value #f]
                             #:from  [cause #f])
   (define cls-ptr (coerce-py-pointer cls))
   (unless cls-ptr
     (raise-argument-error 'raise-into-python "Python exception class" cls))
-  ;; Build the exception value.  If the caller supplied one, use it
-  ;; directly; otherwise instantiate with no args (`cls()`).
+  ;; Build the exception value.
   (define value-ptr
     (cond
-      [value (coerce-py-pointer value)]
-      [else (PyObject_CallNoArgs cls-ptr)]))
+      [(not value)            (PyObject_CallNoArgs cls-ptr)]
+      [(python-pointer? value) (coerce-py-pointer value)]
+      [else
+       ;; Convert the Racket value, then call cls(arg).  We build a
+       ;; one-tuple and dispatch through PyObject_Call because
+       ;; PyObject_CallOneArg is a static-inline helper not exported
+       ;; from libpython.
+       (define arg (racket->python value))
+       (define args (PyTuple_New 1))
+       (incref! arg)         ; PyTuple_SetItem steals
+       (PyTuple_SetItem args 0 arg)
+       (define inst (PyObject_Call cls-ptr args #f))
+       (Py_DecRef args)
+       inst]))
   (when cause
     (define cause-ptr (coerce-py-pointer cause))
     (incref! cause-ptr)

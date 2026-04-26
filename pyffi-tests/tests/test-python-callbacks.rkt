@@ -197,3 +197,86 @@ def _read_meta(fn):
 ")
   (define out ((run "_read_meta") cb))
   (check-equal? (->racket out) '("identity" "Returns its argument unchanged.")))
+
+;; ===================================================================
+;; 9. A non-exn Racket raise does NOT crash the trampoline
+;;    [REGRESSION TEST for reviewer concern #3]
+;;
+;; The original handlers caught only python-exception? and exn:fail?.
+;; A Racket procedure that did `(raise 'something)` (a non-exn value)
+;; or threw an exn:break would have unwound the stack through the C
+;; trampoline frame, which is undefined behaviour on the CPython side.
+;; The catch-all clause must turn any other thrown value into a
+;; Python RuntimeError so Python observes a clean failed call.
+;; ===================================================================
+
+(test-case "[REGRESSION] non-exn Racket raise becomes a Python RuntimeError"
+  (define throws-symbol
+    (racket-procedure->python
+     (λ (_) (raise 'symbol-as-error))))
+  (run* "
+def _try(cb):
+    try:
+        cb(0)
+        return 'no-throw'
+    except RuntimeError as e:
+        return 'caught:' + str(e)
+")
+  (define out ((run "_try") throws-symbol))
+  (check-true (regexp-match? #rx"symbol-as-error" (->racket out))
+              (format "expected RuntimeError text containing the raised value, got ~v"
+                      (->racket out))))
+
+(test-case "[REGRESSION] non-exn Racket raise of an integer becomes a Python RuntimeError"
+  (define throws-int
+    (racket-procedure->python
+     (λ (_) (raise 99))))
+  (run* "
+def _try(cb):
+    try:
+        cb(0)
+        return 'no-throw'
+    except RuntimeError as e:
+        return 'caught:' + str(e)
+")
+  (define out ((run "_try") throws-int))
+  (check-true (regexp-match? #rx"99" (->racket out))))
+
+;; ===================================================================
+;; 10. ml_name / ml_doc survive Racket GC pressure
+;;     [REGRESSION TEST for reviewer concern #4]
+;;
+;; Originally ml_name / ml_doc were assigned the result of
+;; string->bytes/utf-8 -- 3m-GC'd bytes objects.  3m relocates objects
+;; on collection, so a pointer into a Racket bytes inside a raw
+;; PyMethodDef could dangle as soon as the GC ran.  The fix copies
+;; the strings into raw-malloc'd C buffers freed by the capsule
+;; destructor.  We exercise this by allocating the wrapper, then
+;; provoking several major collections plus allocation pressure, and
+;; finally reading __name__ and __doc__ back through Python.
+;; ===================================================================
+
+(test-case "[REGRESSION] ml_name / ml_doc survive Racket GC"
+  (define cb
+    (racket-procedure->python (λ (x) x)
+                              #:name "stress-test-name"
+                              #:doc  "Docstring that must survive GC."))
+  (run* "
+def _read_meta(fn):
+    return [fn.__name__, fn.__doc__]
+")
+  ;; Provoke major collections plus a generous burst of fresh bytes
+  ;; allocations.  Under the original code the bytes backing ml_name
+  ;; and ml_doc could be relocated or reclaimed on a major GC, so a
+  ;; subsequent read of fn.__name__ would return garbage or segfault.
+  (for ([_ (in-range 8)])
+    (collect-garbage 'major))
+  (for ([_ (in-range 20000)])
+    (string->bytes/utf-8
+     (number->string (random 1000000))))
+  (for ([_ (in-range 8)])
+    (collect-garbage 'major))
+
+  (define out ((run "_read_meta") cb))
+  (check-equal? (->racket out)
+                '("stress-test-name" "Docstring that must survive GC.")))

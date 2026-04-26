@@ -353,11 +353,20 @@
 ;;   int         ml_flags;
 ;;   const char *ml_doc;
 ;; };
+;; ml_name and ml_doc are typed as raw pointers (rather than
+;; `_bytes/nul-terminated`) so callers can install a buffer they
+;; manage themselves.  Python may dereference these strings at any
+;; time during the lifetime of the resulting function (introspection
+;; via __name__ / help(), traceback formatting, ...) and 3m relocates
+;; GC'd Racket bytes; a pointer into a Racket bytes stored in a
+;; raw-malloc'd struct can therefore dangle on collection.  See
+;; pyffi/python-callback for the raw-malloc'd-and-freed buffer
+;; convention.
 (define-cstruct _PyMethodDef
-  ([ml_name  _bytes/nul-terminated]
+  ([ml_name  _pointer]
    [ml_meth  _fpointer]
    [ml_flags _int]
-   [ml_doc   _bytes/nul-terminated]))
+   [ml_doc   _pointer]))
 
 ;; Calling-convention flags for ml_flags.  We only use METH_VARARGS
 ;; (positional args delivered as a tuple) on the public API path;

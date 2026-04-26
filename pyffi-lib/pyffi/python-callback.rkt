@@ -105,6 +105,17 @@
         [exn:fail?
          (λ (e)
            (PyErr_SetString PyExc_RuntimeError (exn-message e))
+           #f)]
+        ;; Catch-all: anything else thrown across the trampoline --
+        ;; an exn:break (Ctrl-C), a non-exn `raise` value, an
+        ;; escape continuation -- would otherwise unwind through
+        ;; the C frame, which is undefined behaviour on the CPython
+        ;; side.  Surface it as a RuntimeError carrying the printed
+        ;; form of the value so Python sees the call failed.
+        [(λ (_) #t)
+         (λ (e)
+           (PyErr_SetString PyExc_RuntimeError
+                            (format "racket callback raised non-exception: ~v" e))
            #f)])
        ;; `python->racket` is the deeper converter: it converts
        ;; Python str → Racket string, tuple → vector, etc., where
@@ -176,16 +187,43 @@
 ;; Racket's perspective for as long as Python could still call
 ;; the trampoline.  Indexed by the same integer key.  Cleared by
 ;; the capsule destructor at the same time as proc-table.
+;;
+;; The hash value is a vector #(md name-ptr doc-ptr) so the capsule
+;; destructor can free the C-string buffers we allocated for ml_name
+;; and ml_doc.  Those buffers must be raw-malloc'd (not GC'd Racket
+;; bytes) because Python may dereference ml_name/ml_doc at any time
+;; -- e.g. introspection via __name__ / help() -- and 3m's GC moves
+;; objects, so a pointer into a Racket bytes can dangle even while a
+;; Racket-side reference still exists.
 (define methoddef-table (make-hasheqv))
 
-(define (intern-methoddef key md) (hash-set! methoddef-table key md))
+;; Copy a Racket string into a raw-malloc'd, null-terminated C buffer.
+;; Returns #f if `s` is #f (so we can treat doc=#f as "no docstring").
+(define (string->raw-cstring s)
+  (and s
+       (let* ([b (string->bytes/utf-8 s)]
+              [n (bytes-length b)]
+              [p (malloc (+ n 1) 'raw)])
+         (memcpy p b n)
+         (ptr-set! p _byte n 0)
+         p)))
+
+(define (intern-methoddef key md name-ptr doc-ptr)
+  (hash-set! methoddef-table key (vector md name-ptr doc-ptr)))
+
 (define (release-methoddef key)
-  (define md (hash-ref methoddef-table key #f))
-  (when md
+  (define entry (hash-ref methoddef-table key #f))
+  (when entry
+    (define md       (vector-ref entry 0))
+    (define name-ptr (vector-ref entry 1))
+    (define doc-ptr  (vector-ref entry 2))
+    (when name-ptr (free name-ptr))
+    (when doc-ptr  (free doc-ptr))
     (free md)
     (hash-remove! methoddef-table key)))
 
-;; Wrap the public destructor so it also frees the PyMethodDef.
+;; Wrap the public destructor so it also frees the PyMethodDef and
+;; the ml_name / ml_doc buffers it points at.
 (define (capsule-destructor-impl/full capsule)
   (define key (pointer->key (PyCapsule_GetPointer capsule #f)))
   (release-proc key)
@@ -219,14 +257,18 @@
     (raise-argument-error 'racket-procedure->python "procedure?" proc))
   (define key (intern-proc proc))
   ;; Allocate and populate a PyMethodDef.  Raw-malloc'd: lives until
-  ;; the capsule destructor fires.
-  (define md (malloc _PyMethodDef 'raw))
+  ;; the capsule destructor fires.  ml_name and ml_doc must point at
+  ;; raw-malloc'd C strings rather than GC'd Racket bytes -- see the
+  ;; methoddef-table comment above.
+  (define md       (malloc _PyMethodDef 'raw))
+  (define name-ptr (string->raw-cstring name))
+  (define doc-ptr  (string->raw-cstring doc))
   (cpointer-push-tag! md PyMethodDef-tag)
-  (set-PyMethodDef-ml_name!  md (string->bytes/utf-8 name))
+  (set-PyMethodDef-ml_name!  md name-ptr)
   (set-PyMethodDef-ml_meth!  md trampoline-fnptr)
   (set-PyMethodDef-ml_flags! md METH_VARARGS)
-  (set-PyMethodDef-ml_doc!   md (and doc (string->bytes/utf-8 doc)))
-  (intern-methoddef key md)
+  (set-PyMethodDef-ml_doc!   md doc-ptr)
+  (intern-methoddef key md name-ptr doc-ptr)
   ;; Box the integer key in a capsule and attach the destructor.
   (define capsule
     (PyCapsule_New (key->pointer key) #f capsule-destructor-fnptr/full))
