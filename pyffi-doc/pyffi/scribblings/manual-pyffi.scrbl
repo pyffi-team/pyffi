@@ -104,6 +104,7 @@
      (e '(require pyffi))
      (e '(require pyffi/structs))
      (e '(require pyffi/python-exception))
+     (e '(require pyffi/python-callback))
      (e '(require racket/port))
      (e '(initialize))
      (e '(post-initialize))
@@ -736,6 +737,71 @@ arguments via @tt{class()}.
 
 When @racket[cause] is supplied, sets @tt{__cause__} on the new
 exception, mirroring @tt{raise New(...) from cause}.
+}
+
+
+@subsection{Calling Racket from Python}
+
+The bridge from Racket to Python is symmetric.  Where
+@racket[run] / @racket[run*] / the @racket[obj] @tt{prop:procedure}
+machinery let Racket call Python, the
+@racketmodname[pyffi/python-callback] module wraps a Racket
+procedure as a Python callable that any Python code can invoke.
+
+This is what makes Python's higher-order builtins
+(@tt{map}, @tt{filter}, @tt{sorted(key=…)}, @tt{reduce}, …),
+library hooks (pandas @tt{apply}, JSON @tt{default=}, scikit-learn
+custom metrics, …) and callback-driven APIs (asyncio, GUI
+toolkits, signal handlers, plugin architectures) usable from
+Racket: Python sees an ordinary callable; calling it routes
+through a single C trampoline that invokes the Racket procedure
+with converted arguments and translates the result back.
+
+@examples[#:label #f #:eval pe
+          (define keep-positive? (racket-procedure->python positive?))
+          (run* "
+def _apply(pred, xs):
+    return list(filter(pred, xs))
+")
+          ((run "_apply") keep-positive? (run "[1, -2, 3, -4, 5]"))]
+
+The wrapping is shallow on the way in (Python str/int/float/bool
+arrive as Racket strings/numbers/booleans; compound types stay as
+@racket[obj]) and shallow on the way out (Racket strings, numbers,
+booleans, lists, vectors, void/None convert directly; an @racket[obj]
+returned passes through with refcount preserved).  Exceptions
+raised by the Racket procedure surface to Python: a
+@racket[python-exception?] re-enters Python losslessly via
+@racket[reraise-into-python]; any other @racket[exn:fail?] becomes
+a Python @tt{RuntimeError} carrying the Racket exception message.
+
+@defmodule[pyffi/python-callback]
+
+@defproc[(racket-procedure->python [proc procedure?]
+                                   [#:name name string? "racket-procedure"]
+                                   [#:doc  doc  (or/c string? #f) #f])
+         obj?]{
+Wrap @racket[proc] as a Python callable.  The returned @racket[obj]
+wraps a Python function whose @tt{__name__} is @racket[name] and
+whose @tt{__doc__} is @racket[doc].  When Python calls the
+function, the positional arguments are converted to Racket values
+(via the deep @tt{python->racket} converter), @racket[proc] is
+invoked, and its result is converted back to Python.
+
+Each @racket[racket-procedure->python] call interns the Racket
+procedure in a per-module hash so it remains live for as long as
+the Python wrapper exists; when Python finalises the wrapper, the
+hash entry is released and the Racket procedure becomes eligible
+for garbage collection.
+
+Also exported under the alias @racket[py-lambda].
+}
+
+@deftogether[(@defproc[(py-lambda [proc procedure?]
+                                  [#:name name string? "racket-procedure"]
+                                  [#:doc  doc  (or/c string? #f) #f])
+                       obj?])]{
+Alias for @racket[racket-procedure->python].
 }
 
 

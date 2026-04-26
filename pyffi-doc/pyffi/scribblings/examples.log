@@ -5,6 +5,10 @@
  ((3) 0 () 0 () () (c values c (void)))
  #""
  #"")
+((require pyffi/python-callback)
+ ((3) 0 () 0 () () (c values c (void)))
+ #""
+ #"")
 ((require racket/port) ((3) 0 () 0 () () (c values c (void))) #"" #"")
 ((initialize) ((3) 0 () 0 () () (c values c (void))) #"" #"")
 ((post-initialize) ((3) 0 () 0 () () (c values c (void))) #"" #"")
@@ -673,7 +677,7 @@
    (0
     (u
      .
-     "(obj \"TextCalendar\" : <calendar.TextCalendar object at 0xf7b39f3e1940>)"))))
+     "(obj \"TextCalendar\" : <calendar.TextCalendar object at 0xf5b8251b0620>)"))))
  #""
  #"")
 ((asis
@@ -796,7 +800,7 @@
   (c
    values
    c
-   (0 (u . "(obj callable \"function\" : <function f at 0xf7b39f3e7f60>)"))))
+   (0 (u . "(obj callable \"function\" : <function f at 0xf5b8251f0040>)"))))
  #""
  #"")
 ((asis
@@ -888,7 +892,7 @@
    (0
     (u
      .
-     "(obj \"Calendar\" : <calendar.Calendar object at 0xf7b39f3e32f0>)"))))
+     "(obj \"Calendar\" : <calendar.Calendar object at 0xf5b8251e1b20>)"))))
  #""
  #"")
 ((define cal (calendar.Calendar #:firstweekday 0))
@@ -912,7 +916,7 @@
    (0
     (u
      .
-     "(obj callable \"method\" : <bound method Calendar.monthdatescalendar of <calendar.Calendar object at 0xf7b39f3e1610>>)"))))
+     "(obj callable \"method\" : <bound method Calendar.monthdatescalendar of <calendar.Calendar object at 0xf5b8251b1940>>)"))))
  #""
  #"")
 ((define year 2022) ((3) 0 () 0 () () (c values c (void))) #"" #"")
@@ -1089,6 +1093,40 @@
   ()
   ()
   (c values c (0 (u . "42"))))
+ #""
+ #"")
+((define keep-positive? (racket-procedure->python positive?))
+ ((3) 0 () 0 () () (c values c (void)))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (run*
+             "\ndef _apply(pred, xs):\n    return list(filter(pred, xs))\n")))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . ""))))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv ((run "_apply") keep-positive? (run "[1, -2, 3, -4, 5]"))))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . "(obj \"list\" : [1, 3, 5])"))))
  #""
  #"")
 ((asis

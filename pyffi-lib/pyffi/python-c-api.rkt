@@ -325,6 +325,72 @@
 (define-python PyExc_SystemExit        _PyObject*)
 (define-python PyExc_GeneratorExit     _PyObject*)
 (define-python PyExc_StopIteration     _PyObject*)
+(define-python PyExc_RuntimeError      _PyObject*)
+(define-python PyExc_TypeError         _PyObject*)
+(define-python PyExc_ValueError        _PyObject*)
+
+;; ------------------------------------------------------------------
+;; Wrapping a Racket procedure as a Python callable
+;;
+;; The Python C API has a long-standing recipe for exposing a C
+;; function as a Python callable: build a `PyMethodDef` describing the
+;; function (name, function pointer, arg-style flags, doc string),
+;; box the per-instance state in a `PyCapsule`, and create the
+;; resulting callable with `PyCFunction_NewEx(method_def, self_capsule,
+;; module=NULL)`.  We use the same recipe in python-callback.rkt:
+;; the C function pointer is a single Racket-side trampoline, the
+;; capsule carries the integer key that identifies which Racket
+;; procedure to invoke, and the trampoline does the arg/result
+;; conversion plus exception translation.
+;;
+;; PyMethodDef is the per-callable description; only ml_meth and
+;; ml_flags are mandatory in practice.
+;; ------------------------------------------------------------------
+
+;; struct PyMethodDef {
+;;   const char *ml_name;
+;;   PyCFunction ml_meth;       // PyObject *(*)(PyObject *self, PyObject *args)
+;;   int         ml_flags;
+;;   const char *ml_doc;
+;; };
+(define-cstruct _PyMethodDef
+  ([ml_name  _bytes/nul-terminated]
+   [ml_meth  _fpointer]
+   [ml_flags _int]
+   [ml_doc   _bytes/nul-terminated]))
+
+;; Calling-convention flags for ml_flags.  We only use METH_VARARGS
+;; (positional args delivered as a tuple) on the public API path;
+;; METH_KEYWORDS could be added later for #:keyword support.
+(define METH_VARARGS  #x0001)
+(define METH_KEYWORDS #x0002)
+
+;; PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module)
+;;
+;; Create a Python function object that, when called, invokes
+;; `ml->ml_meth(self, args)`.  `module` may be NULL.  `ml` must point
+;; at storage that outlives the returned function (we malloc-raw the
+;; PyMethodDef and keep it alive via the capsule destructor below).
+(define-python PyCFunction_NewEx
+  (_fun _PyMethodDef-pointer _PyObject* (_or-null _PyObject*)
+        -> [o : _PyObject*] -> (new-reference o)))
+
+;; PyObject *PyCapsule_New(void *pointer, const char *name,
+;;                         PyCapsule_Destructor destructor)
+;;
+;; Box a non-Python pointer in an opaque Python object.  The
+;; destructor (a C function pointer of type
+;; `void(*)(PyObject *capsule)`) is invoked when the capsule is
+;; garbage-collected.  Used to give the trampoline a way to find the
+;; Racket procedure for this callable, and to release the procedure's
+;; root in the per-module hash when Python lets go of the callable.
+(define-python PyCapsule_New
+  (_fun _pointer _bytes/nul-terminated _fpointer
+        -> [o : _PyObject*] -> (new-reference o)))
+
+;; void *PyCapsule_GetPointer(PyObject *capsule, const char *name)
+(define-python PyCapsule_GetPointer
+  (_fun _PyObject* _bytes/nul-terminated -> _pointer))
 
 ;;;
 ;;; NUMBERS
