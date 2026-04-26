@@ -103,6 +103,8 @@
    (let ([e (factory)])
      (e '(require pyffi))
      (e '(require pyffi/structs))
+     (e '(require pyffi/python-exception))
+     (e '(require pyffi/python-callback))
      (e '(require racket/port))
      (e '(initialize))
      (e '(post-initialize))
@@ -520,11 +522,287 @@ carry a little documentation in the oddly named @tt{__doc__} attribute.
 
 @subsection{Exceptions}
 
-An exception on the Python side is converted to an exception on the Racket side.
-The exception will be printed with a full traceback.
+A Python exception raised during a @racket[pyffi]-mediated call is
+converted to a Racket exception that carries the live Python
+exception object and its class.  The conversion is lossless: every
+Python attribute (@tt{args}, @tt{__cause__}, @tt{__context__},
+@tt{__traceback__}, @tt{__notes__}, custom attributes the raiser
+attached, every method) remains reachable from Racket through the
+usual @racket[py-attr] machinery, and the original exception can
+be re-raised back into Python with full identity preserved.
+
+The hierarchy mirrors Python's split between @tt{Exception} and
+@tt{BaseException}:
+
+@itemlist[
+  @item{Python @tt{Exception} subclasses (@tt{ValueError},
+        @tt{KeyError}, @tt{RuntimeError}, user-defined application
+        errors, …) become @racket[exn:fail:pyffi:python] — a
+        subtype of @racket[exn:fail].  The standard idiom
+        @racket[(with-handlers ([exn:fail? handler]) ...)] catches
+        them.}
+  @item{Python @tt{KeyboardInterrupt} becomes
+        @racket[exn:break:pyffi:python] — a subtype of
+        @racket[exn:break].  Caught by @racket[exn:break?] but
+        @emph{not} by @racket[exn:fail?], matching how an
+        ordinary Racket break behaves.}
+  @item{Python @tt{SystemExit} is honoured directly with
+        @racket[exit], mirroring how Python embeddings handle
+        @tt{sys.exit}.}
+  @item{Python @tt{StopIteration} continues to be returned as the
+        symbol @racket['StopIteration] for iterator drivers, so
+        normal iteration paths do not pay exception-machinery
+        cost.}
+]
+
+The two new structs share four observable fields and a
+predicate/property surface that lets callers handle either
+flavour uniformly.
 
 @examples[#:label #f #:eval pe
           (eval:error (run "1/0"))]
+
+@subsubsection{Catching by Python class}
+
+Catch any Python exception:
+
+@examples[#:label #f #:eval pe
+          (with-handlers ([python-exception?
+                           (λ (e)
+                             (list (python-exception-type-name e)
+                                   (exn-message e)))])
+            (run "int('not a number')"))]
+
+The standard Racket idiom also works because
+@racket[exn:fail:pyffi:python] is a subtype of @racket[exn:fail]:
+
+@examples[#:label #f #:eval pe
+          (with-handlers ([exn:fail? (λ (_) 'caught)])
+            (run "{}['missing']"))]
+
+Dispatch on a specific Python class without parsing the message:
+
+@examples[#:label #f #:eval pe
+          (with-handlers ([(λ (e)
+                             (and (python-exception? e)
+                                  (string=? (python-exception-type-name e)
+                                            "ValueError")))
+                           (λ (_) 'value-error)]
+                          [python-exception? (λ (_) 'other)])
+            (run "int('abc')"))]
+
+@subsubsection{Reaching the live Python object}
+
+@racket[python-exception-value] returns the live Python exception
+instance as an @racket[obj].  Custom attributes the Python raiser
+attached (such as @tt{e.errno} or @tt{e.filename}) are reachable
+exactly as in Python:
+
+@examples[#:label #f #:eval pe
+          (run* "
+class CustomError(Exception):
+    def __init__(self, msg, errno):
+        super().__init__(msg)
+        self.errno = errno
+")
+          (with-handlers ([python-exception?
+                           (λ (e)
+                             (define v (obj-the-obj
+                                        (python-exception-value e)))
+                             (PyLong_AsLong
+                              (PyObject_GetAttrString v "errno")))])
+            (run* "raise CustomError('boom', 42)"))]
+
+The same access pattern reaches @tt{__cause__}, @tt{__context__},
+the live traceback object via @tt{__traceback__} (walkable
+frame-by-frame), @tt{__notes__}, and every method.
+
+@subsubsection{Round-tripping back into Python}
+
+@racket[reraise-into-python] re-installs a previously caught
+Python exception in the current thread's Python error indicator,
+so the next Python call surfaces it exactly as if Racket had not
+intercepted.  Identity, traceback, and chained
+@tt{__cause__}/@tt{__context__} are all preserved.
+
+@racket[raise-into-python] installs a fresh Python exception of an
+arbitrary class for surfacing Racket-side failures to Python code
+as a typed Python exception.
+
+@subsubsection{Exception API}
+
+@defstruct[(exn:fail:pyffi:python exn:fail:pyffi)
+           ([class    obj?]
+            [value    obj?]
+            [type-name string?]
+            [traceback (or/c #f (listof obj?))])
+           #:transparent]{
+A Python @tt{Exception}-subclass error raised inside a
+@racket[pyffi]-mediated call.  Subtype of @racket[exn:fail], so
+@racket[exn:fail?] catches it.
+
+@racket[class] is the live Python class object (equivalent to
+@tt{type(e)} in Python).  @racket[value] is the normalised live
+Python exception instance (equivalent to the @tt{e} bound by
+@tt{except ... as e:}).  @racket[type-name] is the Python class
+name as a string, pre-cached so dispatch on the class name avoids
+an FFI hop.  @racket[traceback] is the formatted traceback as a
+list of strings; the live traceback object is reachable via
+@tt{(PyObject_GetAttrString (obj-the-obj value) "__traceback__")}.
+}
+
+@defstruct[(exn:break:pyffi:python exn:break)
+           ([class    obj?]
+            [value    obj?]
+            [type-name string?]
+            [traceback (or/c #f (listof obj?))])
+           #:transparent]{
+A Python @tt{KeyboardInterrupt} that reached the Racket boundary.
+Subtype of @racket[exn:break], so @racket[exn:break?] catches it
+and a broad @racket[exn:fail?] handler does @emph{not}.
+
+The @racket[continuation] field inherited from @racket[exn:break]
+is an escape continuation captured at the point of detection.
+Invoking it returns control past the failed Python call — the
+closest Racket analogue to "ignore the break and continue".
+
+This struct is constructed only by @racket[pyffi]'s internals;
+consumers test the predicate but do not call the constructor
+directly.
+}
+
+@defproc[(python-exception? [v any/c]) boolean?]{
+Returns @racket[#t] for instances of either
+@racket[exn:fail:pyffi:python] or @racket[exn:break:pyffi:python];
+@racket[#f] otherwise.  This is the catch-all predicate for "did
+this come from Python?"
+}
+
+@deftogether[(
+  @defproc[(python-exception-class    [e python-exception?]) obj?]
+  @defproc[(python-exception-value    [e python-exception?]) obj?]
+  @defproc[(python-exception-type-name [e python-exception?]) string?]
+  @defproc[(python-exception-traceback [e python-exception?])
+           (or/c #f (listof obj?))]
+)]{
+Uniform accessors that work across both
+@racket[exn:fail:pyffi:python] and @racket[exn:break:pyffi:python].
+See the field descriptions on @racket[exn:fail:pyffi:python] for
+their meanings.
+}
+
+@defmodule[pyffi/python-exception]
+
+The @racketmodname[pyffi/python-exception] module provides the
+inverse direction: re-raising into Python with full fidelity.
+
+@defproc[(reraise-into-python [e python-exception?]) void?]{
+Re-installs the Python exception @racket[e] in the current
+thread's Python error indicator using @tt{PyErr_Restore}.  The
+exception fires when control next returns to Python (typically
+the next @racket[pyffi] call after this returns).  Identity,
+traceback, @tt{__cause__}, @tt{__context__}, @tt{__notes__} and
+every other instance attribute are preserved across the round
+trip.
+
+This is the lossless inverse of the conversion that produced
+@racket[e]: a Python @tt{except} clause downstream of the re-raise
+sees the same object identity (@tt{is}-check passes) and can
+introspect every attribute as if @racket[pyffi] had never
+intercepted.
+}
+
+@defproc[(reraise-into-python/from [e python-exception?]
+                                   [cause (or/c obj? cpointer?)])
+         void?]{
+Like @racket[reraise-into-python] but additionally sets
+@tt{__cause__} on the Python exception to @racket[cause], mirroring
+Python's @tt{raise X from Y}.
+}
+
+@defproc[(raise-into-python [class (or/c obj? cpointer?)]
+                            [#:value value (or/c #f obj? cpointer?) #f]
+                            [#:from  cause (or/c #f obj? cpointer?) #f])
+         void?]{
+Installs a fresh Python exception of class @racket[class] in the
+current thread's Python error indicator.  Used to surface
+Racket-side failures to Python code as a domain-specific exception
+type — for example, a Racket-side validation error becoming a
+Python @tt{ValueError} that downstream Python code knows how to
+catch.
+
+When @racket[value] is supplied, it is used as the exception
+instance directly; otherwise the class is constructed with no
+arguments via @tt{class()}.
+
+When @racket[cause] is supplied, sets @tt{__cause__} on the new
+exception, mirroring @tt{raise New(...) from cause}.
+}
+
+
+@subsection{Calling Racket from Python}
+
+The bridge from Racket to Python is symmetric.  Where
+@racket[run] / @racket[run*] / the @racket[obj] @tt{prop:procedure}
+machinery let Racket call Python, the
+@racketmodname[pyffi/python-callback] module wraps a Racket
+procedure as a Python callable that any Python code can invoke.
+
+This is what makes Python's higher-order builtins
+(@tt{map}, @tt{filter}, @tt{sorted(key=…)}, @tt{reduce}, …),
+library hooks (pandas @tt{apply}, JSON @tt{default=}, scikit-learn
+custom metrics, …) and callback-driven APIs (asyncio, GUI
+toolkits, signal handlers, plugin architectures) usable from
+Racket: Python sees an ordinary callable; calling it routes
+through a single C trampoline that invokes the Racket procedure
+with converted arguments and translates the result back.
+
+@examples[#:label #f #:eval pe
+          (define keep-positive? (racket-procedure->python positive?))
+          (run* "
+def _apply(pred, xs):
+    return list(filter(pred, xs))
+")
+          ((run "_apply") keep-positive? (run "[1, -2, 3, -4, 5]"))]
+
+The wrapping is shallow on the way in (Python str/int/float/bool
+arrive as Racket strings/numbers/booleans; compound types stay as
+@racket[obj]) and shallow on the way out (Racket strings, numbers,
+booleans, lists, vectors, void/None convert directly; an @racket[obj]
+returned passes through with refcount preserved).  Exceptions
+raised by the Racket procedure surface to Python: a
+@racket[python-exception?] re-enters Python losslessly via
+@racket[reraise-into-python]; any other @racket[exn:fail?] becomes
+a Python @tt{RuntimeError} carrying the Racket exception message.
+
+@defmodule[pyffi/python-callback]
+
+@defproc[(racket-procedure->python [proc procedure?]
+                                   [#:name name string? "racket-procedure"]
+                                   [#:doc  doc  (or/c string? #f) #f])
+         obj?]{
+Wrap @racket[proc] as a Python callable.  The returned @racket[obj]
+wraps a Python function whose @tt{__name__} is @racket[name] and
+whose @tt{__doc__} is @racket[doc].  When Python calls the
+function, the positional arguments are converted to Racket values
+(via the deep @tt{python->racket} converter), @racket[proc] is
+invoked, and its result is converted back to Python.
+
+Each @racket[racket-procedure->python] call interns the Racket
+procedure in a per-module hash so it remains live for as long as
+the Python wrapper exists; when Python finalises the wrapper, the
+hash entry is released and the Racket procedure becomes eligible
+for garbage collection.
+
+Also exported under the alias @racket[py-lambda].
+}
+
+@deftogether[(@defproc[(py-lambda [proc procedure?]
+                                  [#:name name string? "racket-procedure"]
+                                  [#:doc  doc  (or/c string? #f) #f])
+                       obj?])]{
+Alias for @racket[racket-procedure->python].
+}
 
 
 @section{Initialization of the Python Interpreter}

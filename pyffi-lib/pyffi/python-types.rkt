@@ -170,54 +170,116 @@
    (set! py-format-exception-only (get 'traceback.format_exception_only))
    (set! py-format-traceback      (get 'traceback.format_tb))))
 
+;; Canonical handler for Python exceptions surfaced through pyffi.
+;;
+;; `result` is the C-API call's return value: a Python object on
+;; success, `#f` on failure (Python convention is NULL on failure;
+;; pyffi's FFI binding maps NULL to #f).  When `result` is truthy the
+;; macro yields it directly, or `(wrap-fn result)` when a `#:wrap`
+;; clause is supplied (used by `python-functions.rkt` to apply a
+;; per-call result-converter).
+;;
+;; When `result` is #f, fetch and normalise Python's pending exception
+;; and dispatch by its class:
+;;
+;;   - `StopIteration`               → return the symbol 'StopIteration
+;;                                     so iterator drivers can branch
+;;                                     without entering Racket's
+;;                                     exception machinery.
+;;   - `SystemExit`                  → call `(exit code)` directly,
+;;                                     mirroring how Python embeddings
+;;                                     conventionally honour sys.exit.
+;;   - `KeyboardInterrupt`           → raise `exn:break:pyffi:python`
+;;                                     so broad `exn:fail?` handlers
+;;                                     don't swallow user interrupts.
+;;   - any other `Exception` (or
+;;     `BaseException` falling through
+;;     above)                        → raise `exn:fail:pyffi:python`,
+;;                                     a subtype of `exn:fail` that
+;;                                     existing `with-handlers` clauses
+;;                                     catch transparently.
+;;
+;; In every raise case the live Python class and value are stored on
+;; the resulting exn so consumers can introspect attributes, re-raise
+;; back into Python, etc.  See `structs.rkt` for the full hierarchy.
 (define-syntax (handle-python-exception stx)
-    ; When `run` and `run*`returns  NULL (represented as #f in Racket),
-    ; it means an exception occurred on the Python side.
-    ; We must fetch and normalize the exception, exception value and the traceback.
-    ; Fetching the exception clears the exception flags on the Python side.
-    ; Formatting the exception as a string is done useing the Python module `traceback`.
-    (syntax-parse stx
-      [(_handle-python-exception qualified-name result:id)
-       (syntax/loc stx
-         (let ()           
-           (define (pystring->string x) (PyUnicode_AsUTF8 (obj-the-obj x)))
-           (cond
-             ;  everything went fine
-             [result result]
-             ;  an exception was raised
-             [else
-              ; fetch exception (and clear flags), then normalize the exception value
-              (define-values (ptype pvalue ptraceback) (PyErr_Fetch))
-              (define-values (ntype nvalue ntraceback) (PyErr_NormalizeException ptype pvalue ptraceback))
-              ; format the exception so we can print it
-              #;(define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue ntraceback))])
-                              (python->racket (PyObject_Call py-format-exception args #f))))
-              (define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue))])
-                            (define x (PyObject_Call py-format-exception-only args #f))
-                            (py-list->list/pr x)))
-              (define tb  (and ntraceback
-                               (let ([args (flat-vector->py-tuple (vector ntraceback))])
-                                 (py-list->list/pr (PyObject_Call py-format-traceback args #f)))))
-              ;; Racket error message convention:
-              ;;   ‹srcloc›: ‹name›: ‹message›;
-              ;;     ‹continued-message› ...
-              ;;     ‹field›: ‹detail›
-
-              ;; Python uses an StopIteration exception to signal that an iterator
-              ;; has run out of values. Rather than raise an Racket exception,
-              ;; we will use a special value: 'StopIteration
-              (define first-msg (pystring->string (first msg)))
-              (cond
-                [(and (>= (string-length first-msg) 13)
-                      (equal? (substring first-msg 0 13) "StopIteration"))
-                 'StopIteration]
-                [else
-                 (define full-msg
-                   (~a ; "src-loc" ": "
-                    qualified-name ": " "Python exception occurred" ";\n"
-                    (string-append* (map (λ (m) (~a " " (pystring->string m))) msg)) 
-                    (if tb (string-append* (map (λ (m) (~a " " m)) tb)) "")))
-                 (raise (exn full-msg (current-continuation-marks)))])])))]))
+  (syntax-parse stx
+    [(_ qualified-name result:id)
+     (syntax/loc stx
+       (handle-python-exception qualified-name result #:wrap (λ (x) x)))]
+    [(_ qualified-name result:id #:wrap wrap-fn:expr)
+     (syntax/loc stx
+       (let ()
+         (define (pystring->string x) (PyUnicode_AsUTF8 (obj-the-obj x)))
+         (define (matches? cls type-ptr)
+           (and cls type-ptr
+                (not (zero? (PyErr_GivenExceptionMatches cls type-ptr)))))
+         (cond
+           [result (wrap-fn result)]
+           [else
+            (define-values (ptype pvalue ptraceback) (PyErr_Fetch))
+            (define-values (ntype nvalue ntraceback) (PyErr_NormalizeException ptype pvalue ptraceback))
+            (define type-name
+              (and ntype
+                   (let ([n (PyObject_GetAttrString ntype "__name__")])
+                     (and n (PyUnicode_AsUTF8 n)))))
+            (define class-obj (and ntype (obj "type" ntype)))
+            (define value-obj (obj (or type-name "Exception") nvalue))
+            (define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue))])
+                          (py-list->list/pr (PyObject_Call py-format-exception-only args #f))))
+            (define tb  (and ntraceback
+                             (let ([args (flat-vector->py-tuple (vector ntraceback))])
+                               (py-list->list/pr (PyObject_Call py-format-traceback args #f)))))
+            (cond
+              ;; StopIteration: signal-only sentinel.
+              [(matches? ntype PyExc_StopIteration)
+               'StopIteration]
+              ;; SystemExit: honour sys.exit-style termination.
+              ;; Python's convention: None → 0; int → that code; anything
+              ;; else → 1 (Python additionally writes str(value) to
+              ;; stderr; we leave that to the caller to add if wanted).
+              [(matches? ntype PyExc_SystemExit)
+               (define code-obj (and nvalue (PyObject_GetAttrString nvalue "code")))
+               (define code
+                 (cond
+                   [(or (not code-obj) (equal? code-obj the-None)) 0]
+                   [else
+                    (define n (PyLong_AsLong code-obj))
+                    (cond
+                      [(and (= n -1) (PyErr_Occurred)) (PyErr_Clear) 1]
+                      [else n])]))
+               (exit code)]
+              [else
+               (define full-msg
+                 (~a qualified-name ": " "Python exception occurred" ";\n"
+                     (string-append* (map (λ (m) (~a " " (pystring->string m))) msg))
+                     (if tb (string-append* (map (λ (m) (~a " " m)) tb)) "")))
+               (cond
+                 ;; KeyboardInterrupt: surface as exn:break:pyffi:python.
+                 ;; exn:break's continuation field is contract-checked
+                 ;; as escape-continuation?, so we capture one with
+                 ;; call/ec at the raise site.  Invoking it (the user's
+                 ;; "resume" hook) simply returns from this call/ec,
+                 ;; which is the closest Racket analogue to "skip the
+                 ;; break and continue past the failed Python call".
+                 [(matches? ntype PyExc_KeyboardInterrupt)
+                  (call/ec
+                   (λ (resume)
+                     (raise (exn:break:pyffi:python full-msg
+                                                    (current-continuation-marks)
+                                                    resume
+                                                    class-obj value-obj
+                                                    (or type-name "KeyboardInterrupt")
+                                                    tb))))]
+                 ;; Everything else (Exception subclasses, plus the rare
+                 ;; BaseException-but-not-Exception cases like
+                 ;; GeneratorExit and BaseExceptionGroup): exn:fail:pyffi:python.
+                 [else
+                  (raise (exn:fail:pyffi:python full-msg
+                                                (current-continuation-marks)
+                                                class-obj value-obj
+                                                (or type-name "Exception")
+                                                tb))])])])))]))
 
 (define (pr/string x)
   (define has-name? (PyObject_HasAttrString (PyObject_Type x) "__name__"))
