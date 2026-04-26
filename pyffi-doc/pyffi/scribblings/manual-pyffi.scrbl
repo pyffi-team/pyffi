@@ -118,6 +118,7 @@
 This library @tt{pyffi} allows you to use Python from Racket.
 
 @author[@author+email["Jens Axel Søgaard" "jensaxel@soegaard.net"]]
+@author[@author+email["Eric Parsonage"    "eric@eparsonage.com"]]
 
 @local-table-of-contents[]
 
