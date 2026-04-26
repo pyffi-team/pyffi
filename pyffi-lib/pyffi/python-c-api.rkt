@@ -272,6 +272,60 @@
         -> _void
         -> (values ptype pvalue ptraceback)))
 
+; void PyErr_Restore(PyObject *type, PyObject *value, PyObject *traceback)
+;
+; The exact inverse of `PyErr_Fetch`: re-installs the (type, value,
+; traceback) trio into the current thread's error indicator.  Steals
+; references to all three arguments — callers that retain references
+; via pyffi `obj` wrappers must Py_IncRef each before calling.  Used
+; by `reraise-into-python` to send a previously caught Python
+; exception back to Python with full identity, traceback, cause and
+; context preserved.
+(define-python PyErr_Restore
+  (_fun _PyObject* _PyObject* (_or-null _PyObject*) -> _void))
+
+; int PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc)
+;
+; Returns true (non-zero) if `given` is an instance/subclass of
+; `exc`, where `exc` may itself be a single class or a tuple of
+; classes.  Used by `handle-python-exception` to dispatch a caught
+; Python exception to the appropriate Racket exception bucket
+; (Exception → exn:fail, KeyboardInterrupt → exn:break, …).
+(define-python PyErr_GivenExceptionMatches
+  (_fun _PyObject* _PyObject* -> _int))
+
+; void PyException_SetContext(PyObject *self, PyObject *context)
+; void PyException_SetCause(PyObject *self, PyObject *cause)
+;
+; Set the implicit `__context__` or explicit `__cause__` on a Python
+; exception object.  Both steal a reference to the second argument;
+; callers must Py_IncRef before passing if the reference is shared.
+; Used by the `reraise-into-python/from` variant that wants to
+; surface a Racket-side cause as a Python `raise X from Y` chain.
+(define-python PyException_SetContext (_fun _PyObject* _PyObject* -> _void))
+(define-python PyException_SetCause   (_fun _PyObject* _PyObject* -> _void))
+
+;; ------------------------------------------------------------------
+;; Pre-imported pointers to standard Python exception classes.
+;;
+;; The Python C API exports these as `PyObject *` global variables.
+;; We pull them in once via `define-python` (which expands to a
+;; `get-ffi-obj` against libpython) and use them in the dispatch
+;; logic without paying a Python-attribute lookup per check.
+;;
+;; Only the classes the exception-handling pipeline genuinely
+;; dispatches on are pre-imported; consumers needing other ones
+;; (e.g. `OSError`, `RuntimeError` for `py-isinstance?` checks) can
+;; fetch them via `get` against the builtins module the same way.
+;; ------------------------------------------------------------------
+
+(define-python PyExc_BaseException     _PyObject*)
+(define-python PyExc_Exception         _PyObject*)
+(define-python PyExc_KeyboardInterrupt _PyObject*)
+(define-python PyExc_SystemExit        _PyObject*)
+(define-python PyExc_GeneratorExit     _PyObject*)
+(define-python PyExc_StopIteration     _PyObject*)
+
 ;;;
 ;;; NUMBERS
 ;;;

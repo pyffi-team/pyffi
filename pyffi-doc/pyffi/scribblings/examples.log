@@ -1,6 +1,10 @@
 ;; This file was created by make-log-based-eval
 ((require pyffi) ((3) 0 () 0 () () (c values c (void))) #"" #"")
 ((require pyffi/structs) ((3) 0 () 0 () () (c values c (void))) #"" #"")
+((require pyffi/python-exception)
+ ((3) 0 () 0 () () (c values c (void)))
+ #""
+ #"")
 ((require racket/port) ((3) 0 () 0 () () (c values c (void))) #"" #"")
 ((initialize) ((3) 0 () 0 () () (c values c (void))) #"" #"")
 ((post-initialize) ((3) 0 () 0 () () (c values c (void))) #"" #"")
@@ -648,7 +652,7 @@
    (0
     (u
      .
-     "(obj \"version_info\" : sys.version_info(major=3, minor=14, micro=1, releaselevel='final', serial=0))"))))
+     "(obj \"version_info\" : sys.version_info(major=3, minor=12, micro=3, releaselevel='final', serial=0))"))))
  #""
  #"")
 ((import calendar) ((3) 0 () 0 () () (c values c (void))) #"" #"")
@@ -669,7 +673,7 @@
    (0
     (u
      .
-     "(obj \"TextCalendar\" : <calendar.TextCalendar object at 0x120f00e10>)"))))
+     "(obj \"TextCalendar\" : <calendar.TextCalendar object at 0xf7b39f3e1940>)"))))
  #""
  #"")
 ((asis
@@ -792,7 +796,7 @@
   (c
    values
    c
-   (0 (u . "(obj callable \"function\" : <function f at 0x120cbb060>)"))))
+   (0 (u . "(obj callable \"function\" : <function f at 0xf7b39f3e7f60>)"))))
  #""
  #"")
 ((asis
@@ -881,7 +885,10 @@
   (c
    values
    c
-   (0 (u . "(obj \"Calendar\" : <calendar.Calendar object at 0x120e4dbe0>)"))))
+   (0
+    (u
+     .
+     "(obj \"Calendar\" : <calendar.Calendar object at 0xf7b39f3e32f0>)"))))
  #""
  #"")
 ((define cal (calendar.Calendar #:firstweekday 0))
@@ -905,7 +912,7 @@
    (0
     (u
      .
-     "(obj callable \"method\" : <bound method Calendar.monthdatescalendar of <calendar.Calendar object at 0x120f00e10>>)"))))
+     "(obj callable \"method\" : <bound method Calendar.monthdatescalendar of <calendar.Calendar object at 0xf7b39f3e1610>>)"))))
  #""
  #"")
 ((define year 2022) ((3) 0 () 0 () () (c values c (void))) #"" #"")
@@ -969,7 +976,7 @@
    (0
     (u
      .
-     "\nBase calendar class. This class doesn't do any formatting. It simply\nprovides data to subclasses.\n\n"))))
+     "\n    Base calendar class. This class doesn't do any formatting. It simply\n    provides data to subclasses.\n    \n"))))
  #""
  #"")
 ((asis
@@ -984,6 +991,104 @@
   (q
    exn
    "run: Python exception occurred;\n ZeroDivisionError: division by zero\n \n  File \"<string>\", line 1, in <module>\n"))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (with-handlers
+             ((python-exception?
+               (λ (e) (list (python-exception-type-name e) (exn-message e)))))
+             (run "int('not a number')"))))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c
+   values
+   c
+   (0
+    (u
+     .
+     "'(\"ValueError\" \"run: Python exception occurred;\\n ValueError: invalid literal for int() with base 10: 'not a number'\\n \\n  File \\\"<string>\\\", line 1, in <module>\\n\")"))))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (with-handlers
+             ((exn:fail? (λ (_) 'caught)))
+             (run "{}['missing']"))))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . "'caught"))))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (with-handlers
+             (((λ (e)
+                 (and (python-exception? e)
+                      (string=? (python-exception-type-name e) "ValueError")))
+               (λ (_) 'value-error))
+              (python-exception? (λ (_) 'other)))
+             (run "int('abc')"))))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . "'value-error"))))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (run*
+             "\nclass CustomError(Exception):\n    def __init__(self, msg, errno):\n        super().__init__(msg)\n        self.errno = errno\n")))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . ""))))
+ #""
+ #"")
+((asis
+  (with-output-to-string
+   (λ ()
+     (let ((vvv
+            (with-handlers
+             ((python-exception?
+               (λ (e)
+                 (define v (obj-the-obj (python-exception-value e)))
+                 (PyLong_AsLong (PyObject_GetAttrString v "errno")))))
+             (run* "raise CustomError('boom', 42)"))))
+       (if (void? vvv) (void) (print vvv))))))
+ ((3)
+  1
+  (((lib "pyffi/structs.rkt") . deserialize-info:asis-v0))
+  0
+  ()
+  ()
+  (c values c (0 (u . "42"))))
  #""
  #"")
 ((asis

@@ -89,52 +89,18 @@
   (define from-result (or (and result-type (pytype-python-to-racket result-type))
                           python->racket)) ; the default is the generic converter
 
-  (define py-format-exception      (get 'traceback.format_exception))
-  (define py-format-exception-only (get 'traceback.format_exception_only))
-  (define py-format-traceback      (get 'traceback.format_tb))
+  ;; The shared `handle-python-exception` macro (defined once in
+  ;; python-types.rkt) applies `from-result` to a successful result via
+  ;; `#:wrap from-result` and dispatches a Python exception to the
+  ;; appropriate Racket exception type — see python-types.rkt and
+  ;; structs.rkt for the full hierarchy.
 
-  (define-syntax (handle-python-exception stx)
-    ; When PyObject_CallNoArgs and others return NULL (represented as #f in Racket),
-    ; it means an exception occurred on the Python side.
-    ; We must fetch and normalize the exception, exception value and the traceback.
-    ; Fetching the exception clears the exception flags on the Python side.
-    ; Formatting the exception as a string is done useing the Python module `traceback`.
-    (syntax-parse stx
-      [(_handle-python-exception qualified-name result:id)
-       (syntax/loc stx
-         (cond
-           ;  everything went fine
-           [result
-            (from-result result)]
-           ;  an exception was raised
-           [else
-            ; fetch exception (and clear flags), then normalize the exception value
-            (define-values (ptype pvalue ptraceback) (PyErr_Fetch))
-            (define-values (ntype nvalue ntraceback) (PyErr_NormalizeException ptype pvalue ptraceback))
-            ; format the exception so we can print it
-            #;(define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue ntraceback))])
-                            (python->racket (PyObject_Call py-format-exception args #f))))
-            (define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue))])
-                          (py-list->list/pr (PyObject_Call py-format-exception-only args #f))))
-            (define tb  (and ntraceback
-                             (let ([args (flat-vector->py-tuple (vector ntraceback))])
-                               (py-list->list/pr (PyObject_Call py-format-traceback args #f)))))
-            ;; Racket error message convention:
-            ;;   ‹srcloc›: ‹name›: ‹message›;
-            ;;     ‹continued-message› ...
-            ;;     ‹field›: ‹detail›
-            (define full-msg
-              (~a ; "src-loc" ": "
-               qualified-name ": " "Python exception occurred" ";\n"
-               (string-append* (map (λ (m) (~a " " m)) msg)) 
-               (if tb (string-append* (map (λ (m) (~a " " m)) tb)) "")))
-            (raise (exn full-msg (current-continuation-marks)))]))]))
-  
+
   (define python-procedure
     (case n_pos
       [(0) (λ ()
              (define result (PyObject_CallNoArgs py-obj)) ; new reference
-             (handle-python-exception qualified-name result))]
+             (handle-python-exception qualified-name result #:wrap from-result))]
       [(1) (define to-py0 (positional-to-converters))
            (case first-optional
              [(#f)
@@ -143,20 +109,20 @@
                 (define args   (flat-vector->py-tuple (vector v0)))
                 (define kwargs #f)
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (case-lambda
                 [()
                  (define args   (flat-vector->py-tuple (vector)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0)
                  (define v0     (to-py0 a0))
                  (define args   (flat-vector->py-tuple (vector v0)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])])]
                 
       [(2) (define-values (to-py0 to-py1) (positional-to-converters))
            (case first-optional
@@ -167,27 +133,27 @@
                 (define args   (flat-vector->py-tuple (vector v0 v1)))
                 (define kwargs #f)
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (case-lambda
                 [()
                  (define args   (flat-vector->py-tuple (vector)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0)
                  (define v0     (to-py0 a0))
                  (define args   (flat-vector->py-tuple (vector v0)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1)
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (vector v0 v1)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])]
              [(1)
               (case-lambda
                 [(a0)
@@ -195,14 +161,14 @@
                  (define args   (flat-vector->py-tuple (vector v0)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1)
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (vector v0 v1)))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])])]
       [else (define tos (for/list ([pt positional-types])
                           (define to (and pt (pytype-racket-to-python pt)))
                           (or to racket->python))) ; generic default
@@ -214,7 +180,7 @@
                               (to a))))
               (define kwargs #f)
               (define result (PyObject_Call py-obj args kwargs)) ; new reference
-              (handle-python-exception qualified-name result))]))
+              (handle-python-exception qualified-name result #:wrap from-result))]))
   
   (procedure-rename python-procedure (string->symbol name)))
 
@@ -247,47 +213,10 @@
   (define from-result (or (and result-type (pytype-python-to-racket result-type))
                           python->racket)) ; the default is the generic converter
 
-  (define py-format-exception      (get 'traceback.format_exception))
-  (define py-format-exception-only (get 'traceback.format_exception_only))
-  (define py-format-traceback      (get 'traceback.format_tb))
+  ;; (Shared `handle-python-exception` macro lives in python-types.rkt;
+  ;; see comment at the corresponding site in pyproc/no-keywords/no-positional-excess->procedure.)
 
-  (define-syntax (handle-python-exception stx)
-    ; When PyObject_CallNoArgs and others return NULL (represented as #f in Racket),
-    ; it means an exception occurred on the Python side.
-    ; We must fetch and normalize the exception, exception value and the traceback.
-    ; Fetching the exception clears the exception flags on the Python side.
-    ; Formatting the exception as a string is done useing the Python module `traceback`.
-    (syntax-parse stx
-      [(_handle-python-exception qualified-name result:id)
-       (syntax/loc stx
-         (cond
-           ;  everything went fine
-           [result
-            (from-result result)]
-           ;  an exception was raised
-           [else
-            ; fetch exception (and clear flags), then normalize the exception value
-            (define-values (ptype pvalue ptraceback) (PyErr_Fetch))
-            (define-values (ntype nvalue ntraceback) (PyErr_NormalizeException ptype pvalue ptraceback))
-            ; format the exception so we can print it
-            #;(define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue ntraceback))])
-                            (python->racket (PyObject_Call py-format-exception args #f))))
-            (define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue))])
-                          (python->racket (PyObject_Call py-format-exception-only args #f))))
-            (define tb  (and ntraceback
-                             (let ([args (flat-vector->py-tuple (vector ntraceback))])
-                               (python->racket (PyObject_Call py-format-traceback args #f)))))
-            ;; Racket error message convention:
-            ;;   ‹srcloc›: ‹name›: ‹message›;
-            ;;     ‹continued-message› ...
-            ;;     ‹field›: ‹detail›
-            (define full-msg
-              (~a ; "src-loc" ": "
-               qualified-name ": " "Python exception occurred" ";\n"
-               (string-append* (map (λ (m) (~a " " m)) msg)) 
-               (if tb (string-append* (map (λ (m) (~a " " m)) tb)) "")))
-            (raise (exn full-msg (current-continuation-marks)))]))]))
-  
+
   (define python-procedure
     (case n_pos
       [(0) (define to racket->python)
@@ -295,7 +224,7 @@
              (define args   (flat-vector->py-tuple (list->vector (map to as))))
              (define kwargs #f)
              (define result (PyObject_Call py-obj args kwargs)) ; new reference
-             (handle-python-exception qualified-name result))]
+             (handle-python-exception qualified-name result #:wrap from-result))]
       [(1) (define to racket->python)
            (define to-py0 (positional-to-converters))
            (case first-optional
@@ -305,26 +234,26 @@
                 (define args   (flat-vector->py-tuple (list->vector (cons v0 (map to as)))))
                 (define kwargs #f)
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (case-lambda
                 [()      ; optional positional not given
                  (define args   (flat-vector->py-tuple (list->vector #())))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0)     ; 1 positional
                  (define v0     (to-py0 a0))
                  (define args   (flat-vector->py-tuple #()))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 . as) ; 1 positional, then positional excess parameters
                  (define v0     (to-py0 a0))
                  (define args   (flat-vector->py-tuple (list->vector (cons v0 (map to as)))))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])]
              [else (error)])]
       [(2) (define to racket->python)
            (define-values (to-py0 to-py1) (positional-to-converters))
@@ -336,34 +265,34 @@
                 (define args   (flat-vector->py-tuple (list->vector (cons v0 (cons v1 (map to as))))))
                 (define kwargs #f)
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (case-lambda
                 [()      ; optional positionals not given
                  (define args   (flat-vector->py-tuple (list->vector #())))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0)     ; 1 positional
                  (define v0     (to-py0 a0))
                  (define args   (flat-vector->py-tuple #()))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1)  ; 2 positionals
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (list->vector (list v0 v1))))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1 . as) ; 2 positionals, then positional excess parameters
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (list->vector (cons v0 (cons v1 (map to as))))))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])]
              [(1)
               (case-lambda
                 [(a0)     ; 1 positional
@@ -371,21 +300,21 @@
                  (define args   (flat-vector->py-tuple #()))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1)  ; 2 positionals
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (list->vector (list v0 v1))))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)]
+                 (handle-python-exception qualified-name result #:wrap from-result)]
                 [(a0 a1 . as) ; 2 positionals, then positional excess parameters
                  (define v0     (to-py0 a0))
                  (define v1     (to-py1 a1))
                  (define args   (flat-vector->py-tuple (list->vector (cons v0 (cons v1 (map to as))))))
                  (define kwargs #f)
                  (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                 (handle-python-exception qualified-name result)])])]
+                 (handle-python-exception qualified-name result #:wrap from-result)])])]
       [else (define to racket->python)
             (define tos (for/list ([pt positional-types])
                           (define to (and pt (pytype-racket-to-python pt)))
@@ -398,7 +327,7 @@
               (define args (flat-vector->py-tuple (list->vector (append pos-args excess-args))))
               (define kwargs #f)
               (define result (PyObject_Call py-obj args kwargs)) ; new reference
-              (handle-python-exception qualified-name result))]))
+              (handle-python-exception qualified-name result #:wrap from-result))]))
   (procedure-rename python-procedure (string->symbol name)))
 
 (define (pyproc/keywords p)
@@ -443,47 +372,10 @@
         (pyproc/no-keywords/positional-excess->procedure p)
         (pyproc/no-keywords/no-positional-excess->procedure p)))
 
-  (define py-format-exception      (get 'traceback.format_exception))
-  (define py-format-exception-only (get 'traceback.format_exception_only))
-  (define py-format-traceback      (get 'traceback.format_tb))
+  ;; (Shared `handle-python-exception` macro lives in python-types.rkt;
+  ;; see comment at the corresponding site in pyproc/no-keywords/no-positional-excess->procedure.)
 
-  (define-syntax (handle-python-exception stx)
-    ; When PyObject_CallNoArgs and others return NULL (represented as #f in Racket),
-    ; it means an exception occurred on the Python side.
-    ; We must fetch and normalize the exception, exception value and the traceback.
-    ; Fetching the exception clears the exception flags on the Python side.
-    ; Formatting the exception as a string is done useing the Python module `traceback`.
-    (syntax-parse stx
-      [(_handle-python-exception qualified-name result:id)
-       (syntax/loc stx
-         (cond
-           ;  everything went fine
-           [result
-            (from-result result)]
-           ;  an exception was raised
-           [else
-            ; fetch exception (and clear flags), then normalize the exception value
-            (define-values (ptype pvalue ptraceback) (PyErr_Fetch))
-            (define-values (ntype nvalue ntraceback) (PyErr_NormalizeException ptype pvalue ptraceback))
-            ; format the exception so we can print it
-            #;(define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue ntraceback))])
-                            (python->racket (PyObject_Call py-format-exception args #f))))
-            (define msg (let ([args (flat-vector->py-tuple (vector ntype nvalue))])
-                          (python->racket (PyObject_Call py-format-exception-only args #f))))
-            (define tb  (and ntraceback
-                             (let ([args (flat-vector->py-tuple (vector ntraceback))])
-                               (python->racket (PyObject_Call py-format-traceback args #f)))))
-            ;; Racket error message convention:
-            ;;   ‹srcloc›: ‹name›: ‹message›;
-            ;;     ‹continued-message› ...
-            ;;     ‹field›: ‹detail›
-            (define full-msg
-              (~a ; "src-loc" ": "
-               qualified-name ": " "Python exception occurred" ";\n"
-               (string-append* (map (λ (m) (~a " " m)) msg)) 
-               (if tb (string-append* (map (λ (m) (~a " " m)) tb)) "")))
-            (raise (exn full-msg (current-continuation-marks)))]))]))
-  
+
   (define python-procedure/keywords
     (case n_pos
       [(0) (define to racket->python)
@@ -502,7 +394,7 @@
                (define py-kw-arg (to kw-arg))
                (PyDict_SetItem kwargs py-kw py-kw-arg))
              (define result (PyObject_Call py-obj args kwargs)) ; new reference
-             (handle-python-exception qualified-name result))]
+             (handle-python-exception qualified-name result #:wrap from-result))]
       [(1) (define to       racket->python)
            (define to-py0   (positional-types-to-converters))
            (define kw+to-ht (for/hash ([kw  keyword-parameters]
@@ -523,7 +415,7 @@
                   (define py-kw-arg (to kw-arg))
                   (PyDict_SetItem kwargs py-kw py-kw-arg))
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (λ (kws kw-args . as)    ; all positional arguments are optional
                 ; when a function has both optional and excess positional argument
@@ -543,7 +435,7 @@
                   (define py-kw-arg (to kw-arg))
                   (PyDict_SetItem kwargs py-kw py-kw-arg))
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))])]
+                (handle-python-exception qualified-name result #:wrap from-result))])]
              
       [(2) (define to racket->python)
            (define-values (to-py0 to-py1) (positional-types-to-converters))
@@ -566,7 +458,7 @@
                   (define py-kw-arg (to kw-arg))
                   (PyDict_SetItem kwargs py-kw py-kw-arg))
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(0)
               (λ (kws kw-args . as)    ; all positional arguments are optional
                 ; when a function has both optional and excess positional argument
@@ -589,7 +481,7 @@
                   (define py-kw-arg (to kw-arg))
                   (PyDict_SetItem kwargs py-kw py-kw-arg))
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))]
+                (handle-python-exception qualified-name result #:wrap from-result))]
              [(1)
               (λ (kws kw-args a0 . as)    ; all positional arguments are optional
                 ; when a function has both optional and excess positional argument
@@ -609,7 +501,7 @@
                   (define py-kw-arg (to kw-arg))
                   (PyDict_SetItem kwargs py-kw py-kw-arg))
                 (define result (PyObject_Call py-obj args kwargs)) ; new reference
-                (handle-python-exception qualified-name result))])]
+                (handle-python-exception qualified-name result #:wrap from-result))])]
              
       [else (define to racket->python)
             (define tos (for/list ([pt positional-types])
@@ -634,7 +526,7 @@
                 (define py-kw-arg (to kw-arg))
                 (PyDict_SetItem kwargs py-kw py-kw-arg))
               (define result (PyObject_Call py-obj args kwargs)) ; new reference
-              (handle-python-exception qualified-name result))]))
+              (handle-python-exception qualified-name result #:wrap from-result))]))
 
   
   (make-keyword-procedure python-procedure/keywords
