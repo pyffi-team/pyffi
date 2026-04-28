@@ -163,16 +163,27 @@
 
   (initialize-builtin-constants) ; uses `run`
 
-  
+  ;; Inject the venv's site-packages into sys.path here, while
+  ;; Python is up but no user-level imports have happened yet.
+  ;; Doing it later (e.g. inside post-initialize, where it used
+  ;; to live) is too late: any module imported between initialize
+  ;; and post-initialize — including numpy via initialize-numpy
+  ;; — would silently fail to find its venv-installed package
+  ;; because the venv path isn't on sys.path yet.
+  (inject-venv-path)
+
   ; We can't run the initialization thunks here.
   ; The Python modules are loaded yet.
   #;(run-initialization-thunks))
 
 
-(define (post-initialize)
-  (run-initialization-thunks)
-  ; Inject venv site-packages into sys.path when a venv was configured.
-  (define venv-pref (get-preference 'pyffi:venv (λ () #f)))
+;; Add the configured venv's site-packages directory to sys.path.
+;; No-op when the user has not configured a venv, or when the
+;; expected site-packages directory does not exist (e.g. the venv
+;; was built with a different Python minor version than
+;; pyffi:pyver records).
+(define (inject-venv-path)
+  (define venv-pref  (get-preference 'pyffi:venv  (λ () #f)))
   (define pyver-pref (get-preference 'pyffi:pyver (λ () "3.12")))
   (when venv-pref
     (define sitepkg (string-append venv-pref "/lib/python" pyver-pref "/site-packages"))
@@ -182,6 +193,9 @@
       (define sys-path    (PyObject_GetAttrString sys-mod "path"))
       (PyList_Append sys-path (PyUnicode_FromString sitepkg))
       (void))))
+
+(define (post-initialize)
+  (run-initialization-thunks))
 
 (define (finish-initialization)
   (run-initialization-thunks))
