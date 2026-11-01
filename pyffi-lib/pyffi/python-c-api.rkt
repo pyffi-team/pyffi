@@ -753,7 +753,12 @@
 (define-python PyBytes_FromString        (_fun _string       -> [o : _PyObject*] -> (new-reference o)))
 (define-python PyBytes_FromStringAndSize (_fun _string _size -> [o : _PyObject*] -> (new-reference o)))
 
-(define-python PyBytes_AsString          (_fun _PyObject*    -> _bytes))
+(define-python PyBytes_AsStringAndSize   (_fun _PyObject* [buf : (_ptr o _pointer)] [len : (_ptr o _ssize)]
+                                               -> [r : _int]
+                                               -> (and (= r 0)
+                                                       (let ([rb (make-bytes len)])
+                                                         (memcpy rb buf len)
+                                                         rb))))
 
 ; char *PyBytes_AsString(PyObject *o)
 ; (define-python PyBytes_AsString          (_fun _PyObject* -> _bytes)) ; xxx

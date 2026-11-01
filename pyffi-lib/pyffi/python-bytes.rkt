@@ -32,7 +32,7 @@
 
 (define (pybytes->bytes x)
   (unless (pybytes? x) (error 'pybytes->bytes "got: ~a" x))
-  (PyBytes_AsString (obj-the-obj x)))
+  (PyBytes_AsStringAndSize (obj-the-obj x)))
 
 (define (pybytes-length x)
   (unless (pybytes? x) (error 'pybytes-length "got: ~a" x))
